@@ -81,11 +81,13 @@ jobs:
           set -euo pipefail
           version="$(sed -n 's/^Version: //p' control)"
           current="v${version}"
+          notes="AllTrailsLinkFix fixes shared trail links for the premium-unlocked AllTrails 23.2.40 IPA on rootless iOS 16. It carries the complete trail URL into AllTrails and hands it to the app's native website-link parser so the correct trail opens directly. The matching AllTrails 23.2.40 IPA will also be placed in this release alongside the DEB."
 
           if gh release view "$current" >/dev/null 2>&1; then
             gh release upload "$current" packages/*.deb --clobber
+            gh release edit "$current" --title "AllTrailsLinkFix ${version}" --notes "$notes"
           else
             gh release create "$current" packages/*.deb \
               --target "$GITHUB_SHA" --title "AllTrailsLinkFix ${version}" \
-              --notes "AllTrailsLinkFix fixes shared trail links for the supplied AllTrails 23.2.40 build on rootless iOS 16. It carries the complete trail URL into AllTrails and hands it to the app's native website-link parser so the correct trail opens directly."
+              --notes "$notes"
           fi
