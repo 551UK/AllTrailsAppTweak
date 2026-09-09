@@ -1,0 +1,16 @@
+{
+    Filter = {
+        Bundles = (
+            "net.whatsapp.WhatsApp",
+            "net.whatsapp.WhatsAppSMB",
+            "com.apple.MobileSMS",
+            "com.apple.mobilesafari",
+            "com.toyopagroup.picaboo",
+            "com.hammerandchisel.discord",
+            "ph.telegra.Telegraph",
+            "com.google.chrome.ios",
+            "org.mozilla.ios.Firefox",
+            "com.facebook.Messenger"
+        );
+    };
+}
