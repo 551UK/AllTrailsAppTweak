@@ -11,428 +11,292 @@ static BOOL ATIsAllTrailsProcess(void) {
 
 static BOOL ATIsAllTrailsWebURL(NSURL *url) {
     if (!url) return NO;
-
     NSString *scheme = url.scheme.lowercaseString;
-    if (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) return NO;
-
     NSString *host = url.host.lowercaseString;
-    if (!host.length) return NO;
-
+    if (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) return NO;
     return [host isEqualToString:@"alltrails.com"] ||
            [host isEqualToString:@"www.alltrails.com"] ||
            [host hasSuffix:@".alltrails.com"];
 }
 
-static NSString *ATTrailSearchName(NSURL *url) {
+static NSString *ATTrailName(NSURL *url) {
     if (!ATIsAllTrailsWebURL(url)) return nil;
 
     NSArray<NSString *> *parts = url.path.pathComponents;
     NSUInteger trailIndex = [parts indexOfObjectPassingTest:^BOOL(NSString *part, NSUInteger idx, BOOL *stop) {
         return [part.lowercaseString isEqualToString:@"trail"];
     }];
-
     if (trailIndex == NSNotFound || trailIndex + 1 >= parts.count) return nil;
 
     NSString *slug = parts.lastObject;
-    if (!slug.length || [slug.lowercaseString isEqualToString:@"trail"]) return nil;
+    if (!slug.length) return nil;
 
     NSString *decoded = [slug stringByRemovingPercentEncoding] ?: slug;
     NSString *name = [decoded stringByReplacingOccurrencesOfString:@"-" withString:@" "];
-
-    while ([name containsString:@"  "]) {
-        name = [name stringByReplacingOccurrencesOfString:@"  " withString:@" "];
-    }
-
-    name = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    return name.length ? name : nil;
+    return [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 }
 
-static void ATSetPreference(NSString *key, id value) {
+static void ATSetPref(NSString *key, id value) {
     CFStringRef domain = (__bridge CFStringRef)ATPrefsDomain;
-    CFStringRef prefKey = (__bridge CFStringRef)key;
-
-    if (value) {
-        CFPreferencesSetAppValue(prefKey, (__bridge CFPropertyListRef)value, domain);
-    } else {
-        CFPreferencesSetAppValue(prefKey, NULL, domain);
-    }
+    CFPreferencesSetAppValue((__bridge CFStringRef)key,
+                             value ? (__bridge CFPropertyListRef)value : NULL,
+                             domain);
     CFPreferencesAppSynchronize(domain);
 }
 
-static id ATCopyPreference(NSString *key) {
+static id ATGetPref(NSString *key) {
     CFPropertyListRef value = CFPreferencesCopyAppValue((__bridge CFStringRef)key,
                                                         (__bridge CFStringRef)ATPrefsDomain);
     return value ? CFBridgingRelease(value) : nil;
 }
 
-static void ATStorePendingSearch(NSString *name) {
+static void ATStorePending(NSString *name) {
     if (!name.length) return;
-    ATSetPreference(ATPendingNameKey, name);
-    ATSetPreference(ATPendingTimeKey, @([[NSDate date] timeIntervalSince1970]));
+    ATSetPref(ATPendingNameKey, name);
+    ATSetPref(ATPendingTimeKey, @([[NSDate date] timeIntervalSince1970]));
 }
 
-static void ATClearPendingSearch(void) {
-    ATSetPreference(ATPendingNameKey, nil);
-    ATSetPreference(ATPendingTimeKey, nil);
+static void ATClearPending(void) {
+    ATSetPref(ATPendingNameKey, nil);
+    ATSetPref(ATPendingTimeKey, nil);
 }
 
-static NSString *ATPendingSearch(void) {
-    NSString *name = ATCopyPreference(ATPendingNameKey);
-    NSNumber *storedTime = ATCopyPreference(ATPendingTimeKey);
-
+static NSString *ATPending(void) {
+    NSString *name = ATGetPref(ATPendingNameKey);
+    NSNumber *time = ATGetPref(ATPendingTimeKey);
     if (![name isKindOfClass:[NSString class]] || !name.length ||
-        ![storedTime isKindOfClass:[NSNumber class]]) {
-        return nil;
-    }
+        ![time isKindOfClass:[NSNumber class]]) return nil;
 
-    NSTimeInterval age = [[NSDate date] timeIntervalSince1970] - storedTime.doubleValue;
+    NSTimeInterval age = [[NSDate date] timeIntervalSince1970] - time.doubleValue;
     if (age < -5.0 || age > 45.0) {
-        ATClearPendingSearch();
+        ATClearPending();
         return nil;
     }
-
     return name;
 }
 
-static UIWindow *ATMainWindow(void) {
-    UIApplication *application = UIApplication.sharedApplication;
+static UIWindow *ATWindow(void) {
+    UIApplication *app = UIApplication.sharedApplication;
 
     if (@available(iOS 13.0, *)) {
-        for (UIScene *scene in application.connectedScenes) {
-            if (scene.activationState != UISceneActivationStateForegroundActive &&
-                scene.activationState != UISceneActivationStateForegroundInactive) {
-                continue;
-            }
-
+        for (UIScene *scene in app.connectedScenes) {
             if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-            for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            UIWindowScene *windowScene = (UIWindowScene *)scene;
+            for (UIWindow *window in windowScene.windows) {
                 if (window.isKeyWindow) return window;
-            }
-        }
-
-        for (UIScene *scene in application.connectedScenes) {
-            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-            for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-                if (!window.hidden && window.alpha > 0.0) return window;
             }
         }
     }
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    if (application.keyWindow) return application.keyWindow;
+    if (app.keyWindow) return app.keyWindow;
 #pragma clang diagnostic pop
 
-    for (UIWindow *window in application.windows) {
+    for (UIWindow *window in app.windows) {
         if (!window.hidden && window.alpha > 0.0) return window;
     }
-
     return nil;
 }
 
-static UIViewController *ATPresentedController(UIViewController *controller) {
-    UIViewController *current = controller;
-
-    while (current.presentedViewController &&
-           !current.presentedViewController.isBeingDismissed) {
-        current = current.presentedViewController;
-    }
-
-    return current;
+static BOOL ATMatchesSearch(NSString *text) {
+    NSString *lower = text.lowercaseString;
+    if (!lower.length) return NO;
+    return [lower containsString:@"search"] ||
+           [lower containsString:@"explore"] ||
+           [lower containsString:@"discover"] ||
+           [lower containsString:@"find a trail"];
 }
 
-static UITabBarController *ATFindTabController(UIViewController *controller) {
+static UISearchBar *ATFindSearchBar(UIView *view) {
+    if (!view) return nil;
+    if ([view isKindOfClass:[UISearchBar class]]) return (UISearchBar *)view;
+
+    for (UIView *subview in view.subviews) {
+        UISearchBar *bar = ATFindSearchBar(subview);
+        if (bar) return bar;
+    }
+    return nil;
+}
+
+static UITextField *ATFindSearchField(UIView *view) {
+    if (!view) return nil;
+
+    if ([view isKindOfClass:[UITextField class]]) {
+        UITextField *field = (UITextField *)view;
+        if (ATMatchesSearch(field.placeholder) ||
+            ATMatchesSearch(field.accessibilityLabel)) {
+            return field;
+        }
+    }
+
+    for (UIView *subview in view.subviews) {
+        UITextField *field = ATFindSearchField(subview);
+        if (field) return field;
+    }
+    return nil;
+}
+
+static UIControl *ATFindSearchControl(UIView *view) {
+    if (!view) return nil;
+
+    if ([view isKindOfClass:[UIControl class]]) {
+        UIControl *control = (UIControl *)view;
+        if (ATMatchesSearch(control.accessibilityLabel) ||
+            ATMatchesSearch(control.accessibilityHint)) {
+            return control;
+        }
+
+        if ([control isKindOfClass:[UIButton class]]) {
+            UIButton *button = (UIButton *)control;
+            if (ATMatchesSearch(button.currentTitle)) return button;
+        }
+    }
+
+    for (UIView *subview in view.subviews) {
+        UIControl *control = ATFindSearchControl(subview);
+        if (control) return control;
+    }
+    return nil;
+}
+
+static UITabBarController *ATFindTabs(UIViewController *controller) {
     if (!controller) return nil;
 
-    controller = ATPresentedController(controller);
+    if (controller.presentedViewController) {
+        UITabBarController *tabs = ATFindTabs(controller.presentedViewController);
+        if (tabs) return tabs;
+    }
 
     if ([controller isKindOfClass:[UITabBarController class]]) {
         return (UITabBarController *)controller;
     }
 
     if ([controller isKindOfClass:[UINavigationController class]]) {
-        UINavigationController *nav = (UINavigationController *)controller;
-        UITabBarController *found = ATFindTabController(nav.visibleViewController);
-        if (found) return found;
+        UITabBarController *tabs = ATFindTabs(((UINavigationController *)controller).visibleViewController);
+        if (tabs) return tabs;
     }
 
     for (UIViewController *child in controller.childViewControllers) {
-        UITabBarController *found = ATFindTabController(child);
-        if (found) return found;
+        UITabBarController *tabs = ATFindTabs(child);
+        if (tabs) return tabs;
     }
-
     return nil;
 }
 
-static BOOL ATStringContainsSearch(NSString *value) {
-    if (!value.length) return NO;
+static void ATSelectExplore(UITabBarController *tabs) {
+    if (!tabs || !tabs.viewControllers.count) return;
 
-    NSString *lower = value.lowercaseString;
-    return [lower containsString:@"search"] ||
-           [lower containsString:@"explore"] ||
-           [lower containsString:@"discover"];
-}
-
-static void ATSelectExploreTab(UITabBarController *tabs) {
-    if (!tabs || tabs.viewControllers.count == 0) return;
-
-    NSInteger target = -1;
-
-    for (NSUInteger idx = 0; idx < tabs.viewControllers.count; idx++) {
-        UIViewController *controller = tabs.viewControllers[idx];
-        UITabBarItem *item = controller.tabBarItem;
-
-        if (ATStringContainsSearch(item.title) ||
-            ATStringContainsSearch(item.accessibilityLabel)) {
-            target = (NSInteger)idx;
+    NSInteger index = -1;
+    for (NSUInteger i = 0; i < tabs.viewControllers.count; i++) {
+        UITabBarItem *item = tabs.viewControllers[i].tabBarItem;
+        if (ATMatchesSearch(item.title) || ATMatchesSearch(item.accessibilityLabel)) {
+            index = (NSInteger)i;
             break;
         }
     }
 
-    if (target < 0 && tabs.tabBar.items.count) {
-        for (NSUInteger idx = 0; idx < tabs.tabBar.items.count; idx++) {
-            UITabBarItem *item = tabs.tabBar.items[idx];
-            if (ATStringContainsSearch(item.title) ||
-                ATStringContainsSearch(item.accessibilityLabel)) {
-                target = (NSInteger)idx;
-                break;
-            }
-        }
-    }
-
-    if (target < 0) target = 0;
-
-    if (target < (NSInteger)tabs.viewControllers.count) {
-        tabs.selectedIndex = (NSUInteger)target;
-    }
+    if (index < 0) index = 0;
+    if (index < (NSInteger)tabs.viewControllers.count) tabs.selectedIndex = (NSUInteger)index;
 }
 
-static UISearchBar *ATFindSearchBarInView(UIView *view) {
-    if (!view) return nil;
-    if ([view isKindOfClass:[UISearchBar class]]) return (UISearchBar *)view;
-
-    for (UIView *child in view.subviews) {
-        UISearchBar *found = ATFindSearchBarInView(child);
-        if (found) return found;
-    }
-
-    return nil;
-}
-
-static UITextField *ATFindSearchFieldInView(UIView *view) {
-    if (!view) return nil;
-
-    if ([view isKindOfClass:[UITextField class]]) {
-        UITextField *field = (UITextField *)view;
-
-        if (ATStringContainsSearch(field.placeholder) ||
-            ATStringContainsSearch(field.accessibilityLabel) ||
-            [field.textContentType isEqualToString:UITextContentTypeLocation]) {
-            return field;
-        }
-    }
-
-    for (UIView *child in view.subviews) {
-        UITextField *found = ATFindSearchFieldInView(child);
-        if (found) return found;
-    }
-
-    return nil;
-}
-
-static UIControl *ATFindSearchControlInView(UIView *view) {
-    if (!view) return nil;
-
-    if ([view isKindOfClass:[UIControl class]]) {
-        UIControl *control = (UIControl *)view;
-        NSString *title = nil;
-
-        if ([control respondsToSelector:@selector(currentTitle)]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            title = [control performSelector:@selector(currentTitle)];
-#pragma clang diagnostic pop
-        }
-
-        if (ATStringContainsSearch(title) ||
-            ATStringContainsSearch(control.accessibilityLabel) ||
-            ATStringContainsSearch(control.accessibilityHint)) {
-            return control;
-        }
-    }
-
-    for (UIView *child in view.subviews) {
-        UIControl *found = ATFindSearchControlInView(child);
-        if (found) return found;
-    }
-
-    return nil;
-}
-
-static UIViewController *ATVisibleController(UIViewController *controller) {
-    if (!controller) return nil;
-    controller = ATPresentedController(controller);
-
-    if ([controller isKindOfClass:[UINavigationController class]]) {
-        return ATVisibleController(((UINavigationController *)controller).visibleViewController);
-    }
-
-    if ([controller isKindOfClass:[UITabBarController class]]) {
-        return ATVisibleController(((UITabBarController *)controller).selectedViewController);
-    }
-
-    for (UIViewController *child in controller.childViewControllers.reverseObjectEnumerator) {
-        if (child.viewIfLoaded.window) return ATVisibleController(child);
-    }
-
-    return controller;
-}
-
-static UISearchBar *ATSearchBarFromController(UIViewController *controller) {
-    UIViewController *current = controller;
-
-    while (current) {
-        if (@available(iOS 11.0, *)) {
-            UISearchController *searchController = current.navigationItem.searchController;
-            if (searchController.searchBar) return searchController.searchBar;
-        }
-
-        UISearchBar *bar = ATFindSearchBarInView(current.viewIfLoaded);
-        if (bar) return bar;
-
-        current = current.parentViewController;
-    }
-
-    return nil;
-}
-
-static void ATSubmitSearchBar(UISearchBar *searchBar, NSString *query) {
-    if (!searchBar || !query.length) return;
-
-    searchBar.text = query;
-    UITextField *field = searchBar.searchTextField;
+static void ATSubmitBar(UISearchBar *bar, NSString *query) {
+    bar.text = query;
+    UITextField *field = bar.searchTextField;
     field.text = query;
-
     [field sendActionsForControlEvents:UIControlEventEditingChanged];
 
-    id<UISearchBarDelegate> delegate = searchBar.delegate;
+    id<UISearchBarDelegate> delegate = bar.delegate;
     if ([delegate respondsToSelector:@selector(searchBar:textDidChange:)]) {
-        [delegate searchBar:searchBar textDidChange:query];
+        [delegate searchBar:bar textDidChange:query];
     }
 
-    [searchBar becomeFirstResponder];
-
+    [bar becomeFirstResponder];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        id<UISearchBarDelegate> currentDelegate = searchBar.delegate;
+        id<UISearchBarDelegate> currentDelegate = bar.delegate;
         if ([currentDelegate respondsToSelector:@selector(searchBarSearchButtonClicked:)]) {
-            [currentDelegate searchBarSearchButtonClicked:searchBar];
+            [currentDelegate searchBarSearchButtonClicked:bar];
         } else {
-            [searchBar.searchTextField sendActionsForControlEvents:UIControlEventEditingDidEndOnExit];
+            [bar.searchTextField sendActionsForControlEvents:UIControlEventEditingDidEndOnExit];
         }
     });
 }
 
-static void ATSubmitTextField(UITextField *field, NSString *query) {
-    if (!field || !query.length) return;
-
+static void ATSubmitField(UITextField *field, NSString *query) {
     field.text = query;
     [field sendActionsForControlEvents:UIControlEventEditingChanged];
     [field becomeFirstResponder];
 
     id<UITextFieldDelegate> delegate = field.delegate;
-    BOOL shouldReturn = YES;
-
     if ([delegate respondsToSelector:@selector(textFieldShouldReturn:)]) {
-        shouldReturn = [delegate textFieldShouldReturn:field];
+        [delegate textFieldShouldReturn:field];
     }
-
-    if (shouldReturn) {
-        [field sendActionsForControlEvents:UIControlEventEditingDidEndOnExit];
-    }
+    [field sendActionsForControlEvents:UIControlEventEditingDidEndOnExit];
 }
 
-static BOOL ATTryPendingSearch(NSUInteger attempt) {
-    NSString *query = ATPendingSearch();
+static BOOL ATTrySearch(NSUInteger attempt) {
+    NSString *query = ATPending();
     if (!query.length) return YES;
 
-    UIWindow *window = ATMainWindow();
-    UIViewController *root = window.rootViewController;
-    if (!window || !root) return NO;
+    UIWindow *window = ATWindow();
+    if (!window) return NO;
 
-    UITabBarController *tabs = ATFindTabController(root);
-    ATSelectExploreTab(tabs);
+    UITabBarController *tabs = ATFindTabs(window.rootViewController);
+    ATSelectExplore(tabs);
 
-    UIViewController *visible = ATVisibleController(root);
-    UISearchBar *searchBar = ATSearchBarFromController(visible);
-
-    if (!searchBar && tabs) {
-        searchBar = ATSearchBarFromController(ATVisibleController(tabs.selectedViewController));
-    }
-
-    if (searchBar) {
-        ATSubmitSearchBar(searchBar, query);
-        ATClearPendingSearch();
+    UISearchBar *bar = ATFindSearchBar(window);
+    if (bar) {
+        ATSubmitBar(bar, query);
+        ATClearPending();
         return YES;
     }
 
-    UITextField *field = ATFindSearchFieldInView(visible.viewIfLoaded ?: window);
+    UITextField *field = ATFindSearchField(window);
     if (field) {
-        ATSubmitTextField(field, query);
-        ATClearPendingSearch();
+        ATSubmitField(field, query);
+        ATClearPending();
         return YES;
     }
 
-    if (attempt < 5) {
-        UIControl *searchControl = ATFindSearchControlInView(visible.viewIfLoaded ?: window);
-        if (searchControl) {
-            [searchControl sendActionsForControlEvents:UIControlEventTouchUpInside];
-        }
+    if (attempt < 6) {
+        UIControl *control = ATFindSearchControl(window);
+        if (control) [control sendActionsForControlEvents:UIControlEventTouchUpInside];
     }
 
     return NO;
 }
 
-static void ATStartPendingSearch(void) {
-    if (!ATIsAllTrailsProcess() || !ATPendingSearch().length) return;
+static void ATStartSearch(void) {
+    if (!ATIsAllTrailsProcess() || !ATPending().length) return;
 
     __block NSUInteger attempt = 0;
-    __block void (^retry)(void) = nil;
-
+    __block void (^retry)(void);
     retry = ^{
-        if (ATTryPendingSearch(attempt)) {
-            retry = nil;
-            return;
-        }
+        if (ATTrySearch(attempt)) return;
 
         attempt++;
-        if (attempt >= 10 || !ATPendingSearch().length) {
-            retry = nil;
-            return;
-        }
+        if (attempt >= 12 || !ATPending().length) return;
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), retry);
     };
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), retry);
 }
 
-static NSURL *ATBranchHomeURL(NSURL *webURL) {
+static NSURL *ATBranchHomeURL(NSURL *original) {
     NSURLComponents *components = [[NSURLComponents alloc] init];
     components.scheme = @"https";
     components.host = @"alltrails.app.link";
     components.path = @"/";
-
-    NSString *fallback = webURL.absoluteString ?: @"https://www.alltrails.com/";
     components.queryItems = @[
-        [NSURLQueryItem queryItemWithName:@"$fallback_url" value:fallback],
-        [NSURLQueryItem queryItemWithName:@"~feature" value:@"share"],
-        [NSURLQueryItem queryItemWithName:@"~channel" value:@"alltrails_virality"]
+        [NSURLQueryItem queryItemWithName:@"$fallback_url"
+                                    value:original.absoluteString ?: @"https://www.alltrails.com/"],
+        [NSURLQueryItem queryItemWithName:@"~feature" value:@"share"]
     ];
-
-    return components.URL ?: webURL;
+    return components.URL ?: original;
 }
 
 %hook UIApplication
@@ -446,8 +310,8 @@ completionHandler:(void (^)(BOOL success))completion {
         return;
     }
 
-    NSString *trailName = ATTrailSearchName(url);
-    if (!trailName.length) {
+    NSString *name = ATTrailName(url);
+    if (!name.length) {
         NSURL *branchURL = ATBranchHomeURL(url);
         NSMutableDictionary *branchOptions = options ? [options mutableCopy] : [NSMutableDictionary dictionary];
         branchOptions[UIApplicationOpenURLOptionUniversalLinksOnly] = @YES;
@@ -455,7 +319,7 @@ completionHandler:(void (^)(BOOL success))completion {
         return;
     }
 
-    ATStorePendingSearch(trailName);
+    ATStorePending(name);
 
     NSURL *launcher = [NSURL URLWithString:@"alltrails://"];
     NSMutableDictionary *launchOptions = options ? [options mutableCopy] : [NSMutableDictionary dictionary];
@@ -486,19 +350,19 @@ completionHandler:^(BOOL success) {
         return %orig;
     }
 
-    NSString *trailName = ATTrailSearchName(url);
-    if (!trailName.length) {
-        return %orig(ATBranchHomeURL(url));
+    NSString *name = ATTrailName(url);
+    if (!name.length) {
+        NSURL *branchURL = ATBranchHomeURL(url);
+        return %orig(branchURL);
     }
 
-    ATStorePendingSearch(trailName);
+    ATStorePending(name);
 
     NSURL *launcher = [NSURL URLWithString:@"alltrails://"];
-    if (%orig(launcher)) {
-        return YES;
-    }
+    if (%orig(launcher)) return YES;
 
-    return %orig(ATBranchHomeURL(url));
+    NSURL *branchURL = ATBranchHomeURL(url);
+    return %orig(branchURL);
 }
 
 %end
@@ -509,11 +373,11 @@ completionHandler:^(BOOL success) {
                                                           object:nil
                                                            queue:[NSOperationQueue mainQueue]
                                                       usingBlock:^(__unused NSNotification *note) {
-            ATStartPendingSearch();
+            ATStartSearch();
         }];
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            ATStartPendingSearch();
+            ATStartSearch();
         });
     }
 }
