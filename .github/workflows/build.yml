@@ -1,51 +1,71 @@
-name: Build and Release
+name: Build rootless DEB
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: alltrailsapptweak-release
+  cancel-in-progress: true
+
 jobs:
   build:
-    runs-on: macos-latest
-
+    runs-on: macos-15
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Theos
-        uses: waruhachi/theos-action@v2.4.6
+      - name: Set up Theos
+        uses: Randomblock1/theos-action@v1
         with:
-          theos-src: 'theos/theos'
-          theos-branch: 'master'
-          sdks-src: 'theos/sdks'
-          sdks-branch: 'master'
-          libgcuniversal: 'false'
-          altlist: 'false'
+          theos-sdks: https://github.com/theos/sdks
+          theos-sdks-branch: master
 
       - name: Build rootless package
         run: make clean package FINALPACKAGE=1
 
-      - name: Upload package artifact
-        uses: actions/upload-artifact@v4
+      - name: Validate package
+        run: |
+          set -euo pipefail
+          brew install dpkg
+          debs=(packages/*.deb)
+          test "${#debs[@]}" -eq 1
+          deb="${debs[0]}"
+
+          test "$(dpkg-deb -f "$deb" Architecture)" = iphoneos-arm64
+          test "$(dpkg-deb -f "$deb" Package)" = com.551.alltrailsapptweak
+          dpkg-deb --info "$deb"
+          dpkg-deb -x "$deb" "$RUNNER_TEMP/alltrails-check"
+
+          binary="$RUNNER_TEMP/alltrails-check/var/jb/Library/MobileSubstrate/DynamicLibraries/AllTrailsAppTweak.dylib"
+          filter="$RUNNER_TEMP/alltrails-check/var/jb/Library/MobileSubstrate/DynamicLibraries/AllTrailsAppTweak.plist"
+
+          test -s "$binary"
+          test -s "$filter"
+          xcrun lipo "$binary" -verify_arch arm64 arm64e
+          plutil -lint "$filter"
+
+      - uses: actions/upload-artifact@v4
         with:
           name: AllTrailsAppTweak-rootless
           path: packages/*.deb
+          if-no-files-found: error
 
-      - name: Publish v1.0.0 release
-        uses: ncipollo/release-action@v1
-        with:
-          tag: v1.0.0
-          name: AllTrailsAppTweak v1.0.0
-          artifacts: packages/*.deb
-          allowUpdates: true
-          replacesArtifacts: true
-          makeLatest: true
-          body: |
-            Rootless AllTrails link fix for older app versions.
+      - name: Publish latest DEB
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^Version: //p' control)"
+          current="v${version}"
 
-            Converts newer locale-prefixed AllTrails share links to the older canonical/deep-link format so trail links open in AllTrails instead of Safari.
+          if gh release view "$current" >/dev/null 2>&1; then
+            gh release upload "$current" packages/*.deb --clobber
+          else
+            gh release create "$current" packages/*.deb \
+              --target "$GITHUB_SHA" --title "AllTrailsAppTweak ${version}" \
+              --notes "Rootless AllTrails link fix for older app versions."
+          fi
