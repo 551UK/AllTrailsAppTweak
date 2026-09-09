@@ -36,9 +36,8 @@ static NSString *ATCanonicalPath(NSURL *url) {
     NSString *path = url.path ?: @"/";
     NSArray<NSString *> *parts = [path componentsSeparatedByString:@"/"];
 
-    // Modern share URLs can use /en-gb/trail/... while the older custom
-    // router expects /trail/.... Keep locale handling only for the custom
-    // scheme fallback; the universal-link attempt uses the exact share URL.
+    // Newer AllTrails share links can use /en-gb/trail/... while older
+    // AllTrails builds expect the legacy /trail/... route.
     if (parts.count >= 4 &&
         ATLooksLikeLocale(parts[1]) &&
         [parts[2].lowercaseString isEqualToString:@"trail"]) {
@@ -55,13 +54,14 @@ static NSURL *ATUniversalLinkURL(NSURL *url) {
     NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
     if (!components) return url;
 
-    // Keep the exact share path and query. The previous build stripped the
-    // locale and share token before asking iOS to hand the URL to AllTrails,
-    // which can make older app/AASA combinations reject the link.
+    // IMPORTANT: give the older app the legacy path, not the modern
+    // locale-prefixed path. UIApplication's completion handler only tells us
+    // that an app accepted the universal link; it cannot tell us that the
+    // older AllTrails router later displayed "Content unavailable".
+    // Keep the share/query parameters intact while removing only the locale.
     components.scheme = @"https";
-    if ([components.host.lowercaseString isEqualToString:@"alltrails.com"]) {
-        components.host = @"www.alltrails.com";
-    }
+    components.host = @"www.alltrails.com";
+    components.path = ATCanonicalPath(url);
     components.fragment = nil;
 
     return components.URL ?: url;
@@ -75,14 +75,8 @@ static NSURL *ATDirectDeepLinkURL(NSURL *webURL) {
 
     if (!path.length) return [NSURL URLWithString:@"alltrails://"];
 
-    // Mirror the canonical web route directly into the app scheme.
-    // Example:
-    //   https://www.alltrails.com/en-gb/trail/england/cumbria/foo
-    // becomes:
-    //   alltrails://trail/england/cumbria/foo
-    //
-    // The old alltrails://screen/trail/... fallback launched AllTrails but
-    // landed on its "Content unavailable" screen.
+    // Mirror the legacy web route directly into the registered AllTrails
+    // custom scheme as a fallback if iOS cannot hand off the universal link.
     NSURLComponents *components = [[NSURLComponents alloc] init];
     components.scheme = @"alltrails";
 
@@ -94,8 +88,6 @@ static NSURL *ATDirectDeepLinkURL(NSURL *webURL) {
         }
     }
 
-    // Preserve AllTrails' share parameters in case this installed version
-    // uses the share token while resolving the trail.
     components.query = webURL.query;
     return components.URL ?: [NSURL URLWithString:@"alltrails://"];
 }
@@ -142,9 +134,6 @@ completionHandler:(void (^)(BOOL success))completion {
         return %orig;
     }
 
-    // The deprecated synchronous API cannot supply UniversalLinksOnly plus a
-    // completion handler. Use the corrected direct scheme route rather than
-    // the broken alltrails://screen/... form.
     NSURL *deepLinkURL = ATDirectDeepLinkURL(ATUniversalLinkURL(url));
     return %orig(deepLinkURL);
 }
