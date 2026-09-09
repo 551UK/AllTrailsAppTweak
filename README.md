@@ -1,7 +1,11 @@
-# AllTrailsAppTweak
+# AllTrailsLinkFix
 
-Opens shared AllTrails trail links directly in AllTrails on rootless iOS 16. Version 2.0 carries the complete trail URL into the app and uses its native website-link parser. It replaces the old search-screen automation.
+Fixes shared AllTrails trail links on rootless iOS 16 so tapping a trail URL opens the exact trail directly inside AllTrails instead of only launching the app.
 
-Install the DEB and respring. Allow the tweak in both the app you open links from and AllTrails if using Choicy. Inspecting the supplied IPA identified AllTrails **25.2.40 (86784)**; its filename said 23.2.40.
+Built specifically for the supplied **AllTrails 23.2.40** build. The tweak carries the complete shared web URL into AllTrails and hands it to the app's native website-link parser, so long regional/share links open the correct trail.
 
-Built for arm64 and arm64e. Device testing is still required for both a closed and an already-running AllTrails app.
+Install the DEB and respring. If you use Choicy, allow **AllTrailsLinkFix** in both the app you open links from and AllTrails.
+
+Built for arm64 and arm64e.
+
+This tweak only fixes link routing; it does not unlock app features.
