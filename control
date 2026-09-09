@@ -1,8 +1,8 @@
 Package: com.551.alltrailsapptweak
-Name: AllTrailsAppTweak
-Version: 2.0.0
+Name: AllTrailsLinkFix
+Version: 2.1.0
 Architecture: iphoneos-arm64
-Description: Opens AllTrails trail links using the app native website-link parser. Rootless iOS 16.
+Description: Fixes shared trail links so they open the exact trail directly in AllTrails instead of only launching the app. Built for the supplied AllTrails 23.2.40 build on rootless iOS 16.
 Maintainer: 551
 Author: 551
 Section: Tweaks
