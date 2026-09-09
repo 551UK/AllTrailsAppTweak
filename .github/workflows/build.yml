@@ -40,9 +40,9 @@ jobs:
           tail -n 250 build.log > build-error.log || true
           git config user.name "551"
           git config user.email "actions@github.com"
-          git add build-error.log
+          git add -f build-error.log
           git commit -m "Record build error [skip ci]" || true
-          git push || true
+          git push origin HEAD:main || true
 
       - name: Validate package
         run: |
