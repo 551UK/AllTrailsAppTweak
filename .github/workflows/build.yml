@@ -1,0 +1,51 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Theos
+        uses: waruhachi/theos-action@v2.4.6
+        with:
+          theos-src: 'theos/theos'
+          theos-branch: 'master'
+          sdks-src: 'theos/sdks'
+          sdks-branch: 'master'
+          libgcuniversal: 'false'
+          altlist: 'false'
+
+      - name: Build rootless package
+        run: make clean package FINALPACKAGE=1
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AllTrailsAppTweak-rootless
+          path: packages/*.deb
+
+      - name: Publish v1.0.0 release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v1.0.0
+          name: AllTrailsAppTweak v1.0.0
+          artifacts: packages/*.deb
+          allowUpdates: true
+          replacesArtifacts: true
+          makeLatest: true
+          body: |
+            Rootless AllTrails link fix for older app versions.
+
+            Converts newer locale-prefixed AllTrails share links to the older canonical/deep-link format so trail links open in AllTrails instead of Safari.
