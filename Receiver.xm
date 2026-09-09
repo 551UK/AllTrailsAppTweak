@@ -108,6 +108,9 @@ static void ATRCaptureURL(NSURL *url) {
     ATRWritePendingName(trailName);
 }
 
+// Universal links are delivered to iOS apps as NSUserActivity objects.
+// Hooking the Foundation object itself avoids relying on the app's private
+// AppDelegate/SceneDelegate class names and works for both cold and warm opens.
 %hook NSUserActivity
 
 - (NSURL *)webpageURL {
@@ -119,43 +122,10 @@ static void ATRCaptureURL(NSURL *url) {
 - (NSString *)activityType {
     NSString *type = %orig;
     if (ATRIsAllTrailsProcess() && [type isEqualToString:NSUserActivityTypeBrowsingWeb]) {
-        ATRCaptureURL(self.webpageURL);
+        NSURL *url = self.webpageURL;
+        ATRCaptureURL(url);
     }
     return type;
-}
-
-%end
-
-%hook UISceneConnectionOptions
-
-- (NSSet<NSUserActivity *> *)userActivities {
-    NSSet<NSUserActivity *> *activities = %orig;
-    if (ATRIsAllTrailsProcess()) {
-        for (NSUserActivity *activity in activities) {
-            ATRCaptureURL(activity.webpageURL);
-        }
-    }
-    return activities;
-}
-
-- (NSSet<UIOpenURLContext *> *)URLContexts {
-    NSSet<UIOpenURLContext *> *contexts = %orig;
-    if (ATRIsAllTrailsProcess()) {
-        for (UIOpenURLContext *context in contexts) {
-            ATRCaptureURL(context.URL);
-        }
-    }
-    return contexts;
-}
-
-%end
-
-%hook UIOpenURLContext
-
-- (NSURL *)URL {
-    NSURL *url = %orig;
-    ATRCaptureURL(url);
-    return url;
 }
 
 %end
