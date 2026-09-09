@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <notify.h>
+#import <objc/runtime.h>
 #include <string.h>
 
 static NSString * const ATRBundleID = @"com.alltrails.AllTrails";
@@ -11,9 +12,13 @@ static const NSUInteger ATRMaxChunks = 128;
 
 static NSString *ATRLastCapturedURL = nil;
 static NSTimeInterval ATRLastCaptureTime = 0;
+static NSMutableDictionary<NSString *, NSValue *> *ATROriginalIMPs = nil;
+static NSMutableSet<NSString *> *ATRHookedSelectors = nil;
+static BOOL ATRDidShowLoadedToast = NO;
 
 static BOOL ATRIsAllTrailsProcess(void) {
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+    if (!bundleID.length) return NO;
     return [bundleID isEqualToString:ATRBundleID] ||
            [bundleID caseInsensitiveCompare:@"com.alltrails.alltrails"] == NSOrderedSame;
 }
@@ -108,9 +113,180 @@ static void ATRCaptureURL(NSURL *url) {
     ATRWritePendingName(trailName);
 }
 
-// Universal links are delivered to iOS apps as NSUserActivity objects.
-// Hooking the Foundation object itself avoids relying on the app's private
-// AppDelegate/SceneDelegate class names and works for both cold and warm opens.
+static void ATRCaptureObject(id object, NSUInteger depth) {
+    if (!object || depth > 4) return;
+
+    if ([object isKindOfClass:[NSURL class]]) {
+        ATRCaptureURL((NSURL *)object);
+        return;
+    }
+
+    if ([object isKindOfClass:[NSString class]]) {
+        NSString *text = (NSString *)object;
+        if ([text rangeOfString:@"alltrails.com" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            NSURL *url = [NSURL URLWithString:text];
+            ATRCaptureURL(url);
+        }
+        return;
+    }
+
+    if ([object isKindOfClass:[NSDictionary class]]) {
+        for (id key in (NSDictionary *)object) {
+            ATRCaptureObject([(NSDictionary *)object objectForKey:key], depth + 1);
+        }
+        return;
+    }
+
+    if ([object isKindOfClass:[NSArray class]] || [object isKindOfClass:[NSSet class]]) {
+        for (id value in object) ATRCaptureObject(value, depth + 1);
+    }
+}
+
+static void ATRCaptureActivity(NSUserActivity *activity) {
+    if (!activity) return;
+    ATRCaptureURL(activity.webpageURL);
+    ATRCaptureObject(activity.userInfo, 0);
+}
+
+static NSString *ATRHookKey(Class cls, SEL selector) {
+    return [NSString stringWithFormat:@"%p|%@", cls, NSStringFromSelector(selector)];
+}
+
+static IMP ATRGetOriginalIMP(id object, SEL selector) {
+    if (!object || !selector) return NULL;
+    Class cls = object_getClass(object);
+    while (cls) {
+        NSValue *value = ATROriginalIMPs[ATRHookKey(cls, selector)];
+        if (value) return [value pointerValue];
+        cls = class_getSuperclass(cls);
+    }
+    return NULL;
+}
+
+static void ATRHookSelector(Class cls, SEL selector, IMP replacement) {
+    if (!cls || !selector || !replacement) return;
+    NSString *key = ATRHookKey(cls, selector);
+    if ([ATRHookedSelectors containsObject:key]) return;
+
+    Method inherited = class_getInstanceMethod(cls, selector);
+    if (!inherited) return;
+
+    IMP original = method_getImplementation(inherited);
+    if (!original || original == replacement) return;
+    const char *types = method_getTypeEncoding(inherited);
+    if (!types) return;
+
+    // If the implementation is inherited, first copy it onto this class so we
+    // never replace a superclass method used by unrelated UIKit objects.
+    class_addMethod(cls, selector, original, types);
+    Method target = class_getInstanceMethod(cls, selector);
+    if (!target) return;
+
+    ATROriginalIMPs[key] = [NSValue valueWithPointer:original];
+    method_setImplementation(target, replacement);
+    [ATRHookedSelectors addObject:key];
+}
+
+typedef BOOL (*ATRAppContinueIMP)(id, SEL, UIApplication *, NSUserActivity *, void (^)(NSArray *));
+typedef BOOL (*ATRAppOpenURLIMP)(id, SEL, UIApplication *, NSURL *, NSDictionary *);
+typedef void (*ATRSceneContinueIMP)(id, SEL, UIScene *, NSUserActivity *);
+typedef void (*ATRSceneOpenContextsIMP)(id, SEL, UIScene *, NSSet *);
+
+static BOOL ATRAppContinue(id self, SEL _cmd, UIApplication *application, NSUserActivity *activity, void (^restorationHandler)(NSArray *)) {
+    ATRCaptureActivity(activity);
+    ATRAppContinueIMP original = (ATRAppContinueIMP)ATRGetOriginalIMP(self, _cmd);
+    return original ? original(self, _cmd, application, activity, restorationHandler) : NO;
+}
+
+static BOOL ATRAppOpenURL(id self, SEL _cmd, UIApplication *application, NSURL *url, NSDictionary *options) {
+    ATRCaptureURL(url);
+    ATRAppOpenURLIMP original = (ATRAppOpenURLIMP)ATRGetOriginalIMP(self, _cmd);
+    return original ? original(self, _cmd, application, url, options) : NO;
+}
+
+static void ATRSceneContinue(id self, SEL _cmd, UIScene *scene, NSUserActivity *activity) {
+    ATRCaptureActivity(activity);
+    ATRSceneContinueIMP original = (ATRSceneContinueIMP)ATRGetOriginalIMP(self, _cmd);
+    if (original) original(self, _cmd, scene, activity);
+}
+
+static void ATRSceneOpenContexts(id self, SEL _cmd, UIScene *scene, NSSet *contexts) {
+    for (id context in contexts) {
+        if ([context respondsToSelector:@selector(URL)]) ATRCaptureURL([context URL]);
+    }
+    ATRSceneOpenContextsIMP original = (ATRSceneOpenContextsIMP)ATRGetOriginalIMP(self, _cmd);
+    if (original) original(self, _cmd, scene, contexts);
+}
+
+static void ATRInstallDelegateHooks(id delegate) {
+    if (!delegate || !ATRIsAllTrailsProcess()) return;
+    Class cls = object_getClass(delegate);
+    ATRHookSelector(cls,
+                    @selector(application:continueUserActivity:restorationHandler:),
+                    (IMP)ATRAppContinue);
+    ATRHookSelector(cls,
+                    @selector(application:openURL:options:),
+                    (IMP)ATRAppOpenURL);
+    ATRHookSelector(cls,
+                    @selector(scene:continueUserActivity:),
+                    (IMP)ATRSceneContinue);
+    ATRHookSelector(cls,
+                    @selector(scene:openURLContexts:),
+                    (IMP)ATRSceneOpenContexts);
+}
+
+static UIWindow *ATRWindow(void) {
+    UIApplication *application = UIApplication.sharedApplication;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in application.connectedScenes) {
+            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+            for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+                if (window.isKeyWindow) return window;
+            }
+        }
+    }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    return application.keyWindow;
+#pragma clang diagnostic pop
+}
+
+static void ATRShowLoadedToast(void) {
+    if (ATRDidShowLoadedToast || !ATRIsAllTrailsProcess()) return;
+    UIWindow *window = ATRWindow();
+    if (!window) return;
+    ATRDidShowLoadedToast = YES;
+
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
+    label.text = @"AllTrails link fix 1.0.17 loaded";
+    label.textAlignment = NSTextAlignmentCenter;
+    label.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    label.textColor = UIColor.whiteColor;
+    label.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.90];
+    label.layer.cornerRadius = 10.0;
+    label.layer.masksToBounds = YES;
+
+    CGFloat width = MIN(CGRectGetWidth(window.bounds) - 32.0, 290.0);
+    CGFloat top = window.safeAreaInsets.top + 8.0;
+    label.frame = CGRectMake((CGRectGetWidth(window.bounds) - width) * 0.5, top, width, 34.0);
+    [window addSubview:label];
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [label removeFromSuperview];
+    });
+}
+
+static void ATRScanDelegates(void) {
+    if (!ATRIsAllTrailsProcess()) return;
+    UIApplication *application = UIApplication.sharedApplication;
+    ATRInstallDelegateHooks(application.delegate);
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in application.connectedScenes) {
+            ATRInstallDelegateHooks(scene.delegate);
+        }
+    }
+}
+
 %hook NSUserActivity
 
 - (NSURL *)webpageURL {
@@ -119,13 +295,62 @@ static void ATRCaptureURL(NSURL *url) {
     return url;
 }
 
-- (NSString *)activityType {
-    NSString *type = %orig;
-    if (ATRIsAllTrailsProcess() && [type isEqualToString:NSUserActivityTypeBrowsingWeb]) {
-        NSURL *url = self.webpageURL;
-        ATRCaptureURL(url);
-    }
-    return type;
+- (void)setWebpageURL:(NSURL *)url {
+    %orig;
+    ATRCaptureURL(url);
+}
+
+- (NSDictionary *)userInfo {
+    NSDictionary *info = %orig;
+    ATRCaptureObject(info, 0);
+    return info;
 }
 
 %end
+
+%hook UIApplication
+
+- (void)setDelegate:(id)delegate {
+    %orig;
+    ATRInstallDelegateHooks(delegate);
+}
+
+%end
+
+%hook UIScene
+
+- (void)setDelegate:(id)delegate {
+    %orig;
+    ATRInstallDelegateHooks(delegate);
+}
+
+%end
+
+%ctor {
+    if (!ATRIsAllTrailsProcess()) return;
+
+    ATROriginalIMPs = [NSMutableDictionary dictionary];
+    ATRHookedSelectors = [NSMutableSet set];
+    %init;
+
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    [center addObserverForName:UIApplicationDidFinishLaunchingNotification
+                         object:nil
+                          queue:[NSOperationQueue mainQueue]
+                     usingBlock:^(__unused NSNotification *note) {
+        ATRScanDelegates();
+    }];
+    [center addObserverForName:UIApplicationDidBecomeActiveNotification
+                         object:nil
+                          queue:[NSOperationQueue mainQueue]
+                     usingBlock:^(__unused NSNotification *note) {
+        ATRScanDelegates();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            ATRShowLoadedToast();
+        });
+    }];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ATRScanDelegates();
+    });
+}
