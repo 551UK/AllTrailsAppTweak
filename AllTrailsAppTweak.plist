@@ -1,6 +1,7 @@
 {
     Filter = {
         Bundles = (
+            "com.openai.chat",
             "net.whatsapp.WhatsApp",
             "net.whatsapp.WhatsAppSMB",
             "com.apple.MobileSMS",
