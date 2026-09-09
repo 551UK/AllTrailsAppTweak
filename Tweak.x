@@ -1,12 +1,14 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <objc/message.h>
 
 static NSString * const ATPrefsDomain = @"com.551.alltrailsapptweak";
 static NSString * const ATPendingNameKey = @"PendingTrailSearch";
 static NSString * const ATPendingTimeKey = @"PendingTrailSearchTime";
+static NSString * const ATAllTrailsBundleID = @"com.alltrails.AllTrails";
 
 static BOOL ATIsAllTrailsProcess(void) {
-    return [[[NSBundle mainBundle] bundleIdentifier] isEqualToString:@"com.alltrails.AllTrails"];
+    return [[[NSBundle mainBundle] bundleIdentifier] isEqualToString:ATAllTrailsBundleID];
 }
 
 static BOOL ATIsAllTrailsWebURL(NSURL *url) {
@@ -68,11 +70,27 @@ static NSString *ATPending(void) {
         ![time isKindOfClass:[NSNumber class]]) return nil;
 
     NSTimeInterval age = [[NSDate date] timeIntervalSince1970] - time.doubleValue;
-    if (age < -5.0 || age > 45.0) {
+    if (age < -5.0 || age > 60.0) {
         ATClearPending();
         return nil;
     }
     return name;
+}
+
+// Bare alltrails:// is not a neutral app launcher on the older AllTrails
+// build: its legacy router treats the empty route as content and shows
+// "Content unavailable". LaunchServices opens the application by bundle ID
+// instead, so no deep-link route is handed to AllTrails at all.
+static BOOL ATLaunchAllTrailsWithoutURL(void) {
+    Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+    SEL defaultSelector = NSSelectorFromString(@"defaultWorkspace");
+    if (!workspaceClass || ![workspaceClass respondsToSelector:defaultSelector]) return NO;
+
+    id workspace = ((id (*)(id, SEL))objc_msgSend)((id)workspaceClass, defaultSelector);
+    SEL openSelector = NSSelectorFromString(@"openApplicationWithBundleID:");
+    if (!workspace || ![workspace respondsToSelector:openSelector]) return NO;
+
+    return ((BOOL (*)(id, SEL, id))objc_msgSend)(workspace, openSelector, ATAllTrailsBundleID);
 }
 
 static UIWindow *ATWindow(void) {
@@ -99,13 +117,36 @@ static UIWindow *ATWindow(void) {
     return nil;
 }
 
-static BOOL ATMatchesSearch(NSString *text) {
-    NSString *lower = text.lowercaseString;
-    if (!lower.length) return NO;
-    return [lower containsString:@"search"] ||
-           [lower containsString:@"explore"] ||
-           [lower containsString:@"discover"] ||
-           [lower containsString:@"find a trail"];
+static BOOL ATTextContains(NSString *text, NSString *needle) {
+    if (!text.length || !needle.length) return NO;
+    return [text rangeOfString:needle options:NSCaseInsensitiveSearch].location != NSNotFound;
+}
+
+static BOOL ATLooksLikeSearch(NSString *text) {
+    return ATTextContains(text, @"search") ||
+           ATTextContains(text, @"explore") ||
+           ATTextContains(text, @"discover") ||
+           ATTextContains(text, @"find a trail");
+}
+
+static UIButton *ATFindDismissButton(UIView *view) {
+    if (!view) return nil;
+
+    if ([view isKindOfClass:[UIButton class]]) {
+        UIButton *button = (UIButton *)view;
+        NSString *title = button.currentTitle ?: button.accessibilityLabel;
+        if (ATTextContains(title, @"got it") ||
+            [title.lowercaseString isEqualToString:@"ok"] ||
+            ATTextContains(title, @"dismiss")) {
+            return button;
+        }
+    }
+
+    for (UIView *subview in view.subviews) {
+        UIButton *button = ATFindDismissButton(subview);
+        if (button) return button;
+    }
+    return nil;
 }
 
 static UISearchBar *ATFindSearchBar(UIView *view) {
@@ -124,8 +165,7 @@ static UITextField *ATFindSearchField(UIView *view) {
 
     if ([view isKindOfClass:[UITextField class]]) {
         UITextField *field = (UITextField *)view;
-        if (ATMatchesSearch(field.placeholder) ||
-            ATMatchesSearch(field.accessibilityLabel)) {
+        if (ATLooksLikeSearch(field.placeholder) || ATLooksLikeSearch(field.accessibilityLabel)) {
             return field;
         }
     }
@@ -142,14 +182,11 @@ static UIControl *ATFindSearchControl(UIView *view) {
 
     if ([view isKindOfClass:[UIControl class]]) {
         UIControl *control = (UIControl *)view;
-        if (ATMatchesSearch(control.accessibilityLabel) ||
-            ATMatchesSearch(control.accessibilityHint)) {
+        if (ATLooksLikeSearch(control.accessibilityLabel) || ATLooksLikeSearch(control.accessibilityHint)) {
             return control;
         }
-
-        if ([control isKindOfClass:[UIButton class]]) {
-            UIButton *button = (UIButton *)control;
-            if (ATMatchesSearch(button.currentTitle)) return button;
+        if ([control isKindOfClass:[UIButton class]] && ATLooksLikeSearch(((UIButton *)control).currentTitle)) {
+            return control;
         }
     }
 
@@ -163,17 +200,18 @@ static UIControl *ATFindSearchControl(UIView *view) {
 static UITabBarController *ATFindTabs(UIViewController *controller) {
     if (!controller) return nil;
 
+    if ([controller isKindOfClass:[UITabBarController class]]) {
+        return (UITabBarController *)controller;
+    }
+
     if (controller.presentedViewController) {
         UITabBarController *tabs = ATFindTabs(controller.presentedViewController);
         if (tabs) return tabs;
     }
 
-    if ([controller isKindOfClass:[UITabBarController class]]) {
-        return (UITabBarController *)controller;
-    }
-
     if ([controller isKindOfClass:[UINavigationController class]]) {
-        UITabBarController *tabs = ATFindTabs(((UINavigationController *)controller).visibleViewController);
+        UINavigationController *nav = (UINavigationController *)controller;
+        UITabBarController *tabs = ATFindTabs(nav.visibleViewController);
         if (tabs) return tabs;
     }
 
@@ -190,14 +228,21 @@ static void ATSelectExplore(UITabBarController *tabs) {
     NSInteger index = -1;
     for (NSUInteger i = 0; i < tabs.viewControllers.count; i++) {
         UITabBarItem *item = tabs.viewControllers[i].tabBarItem;
-        if (ATMatchesSearch(item.title) || ATMatchesSearch(item.accessibilityLabel)) {
+        if (ATLooksLikeSearch(item.title) || ATLooksLikeSearch(item.accessibilityLabel)) {
             index = (NSInteger)i;
             break;
         }
     }
 
     if (index < 0) index = 0;
-    if (index < (NSInteger)tabs.viewControllers.count) tabs.selectedIndex = (NSUInteger)index;
+    if (index >= (NSInteger)tabs.viewControllers.count) return;
+
+    tabs.selectedIndex = (NSUInteger)index;
+
+    UIViewController *selected = tabs.selectedViewController;
+    if ([selected isKindOfClass:[UINavigationController class]]) {
+        [(UINavigationController *)selected popToRootViewControllerAnimated:NO];
+    }
 }
 
 static void ATSubmitBar(UISearchBar *bar, NSString *query) {
@@ -212,7 +257,7 @@ static void ATSubmitBar(UISearchBar *bar, NSString *query) {
     }
 
     [bar becomeFirstResponder];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         id<UISearchBarDelegate> currentDelegate = bar.delegate;
         if ([currentDelegate respondsToSelector:@selector(searchBarSearchButtonClicked:)]) {
@@ -242,6 +287,13 @@ static BOOL ATTrySearch(NSUInteger attempt) {
     UIWindow *window = ATWindow();
     if (!window) return NO;
 
+    // Clear the exact stale error screen produced by the previous builds.
+    UIButton *dismiss = ATFindDismissButton(window);
+    if (dismiss) {
+        [dismiss sendActionsForControlEvents:UIControlEventTouchUpInside];
+        return NO;
+    }
+
     UITabBarController *tabs = ATFindTabs(window.rootViewController);
     ATSelectExplore(tabs);
 
@@ -259,7 +311,7 @@ static BOOL ATTrySearch(NSUInteger attempt) {
         return YES;
     }
 
-    if (attempt < 6) {
+    if (attempt < 8) {
         UIControl *control = ATFindSearchControl(window);
         if (control) [control sendActionsForControlEvents:UIControlEventTouchUpInside];
     }
@@ -276,7 +328,7 @@ static void ATStartSearch(void) {
         if (ATTrySearch(attempt)) return;
 
         attempt++;
-        if (attempt >= 12 || !ATPending().length) return;
+        if (attempt >= 16 || !ATPending().length) return;
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), retry);
@@ -284,19 +336,6 @@ static void ATStartSearch(void) {
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), retry);
-}
-
-static NSURL *ATBranchHomeURL(NSURL *original) {
-    NSURLComponents *components = [[NSURLComponents alloc] init];
-    components.scheme = @"https";
-    components.host = @"alltrails.app.link";
-    components.path = @"/";
-    components.queryItems = @[
-        [NSURLQueryItem queryItemWithName:@"$fallback_url"
-                                    value:original.absoluteString ?: @"https://www.alltrails.com/"],
-        [NSURLQueryItem queryItemWithName:@"~feature" value:@"share"]
-    ];
-    return components.URL ?: original;
 }
 
 %hook UIApplication
@@ -312,37 +351,22 @@ completionHandler:(void (^)(BOOL success))completion {
 
     NSString *name = ATTrailName(url);
     if (!name.length) {
-        NSURL *branchURL = ATBranchHomeURL(url);
-        NSMutableDictionary *branchOptions = options ? [options mutableCopy] : [NSMutableDictionary dictionary];
-        branchOptions[UIApplicationOpenURLOptionUniversalLinksOnly] = @YES;
-        %orig(branchURL, branchOptions, completion);
+        %orig;
         return;
     }
 
     ATStorePending(name);
 
-    NSURL *launcher = [NSURL URLWithString:@"alltrails://"];
+    if (ATLaunchAllTrailsWithoutURL()) {
+        if (completion) completion(YES);
+        return;
+    }
+
+    // Last-resort fallback if LaunchServices is unavailable.
+    NSURL *launcher = [NSURL URLWithString:@"alltrails://screen/explore"];
     NSMutableDictionary *launchOptions = options ? [options mutableCopy] : [NSMutableDictionary dictionary];
     [launchOptions removeObjectForKey:UIApplicationOpenURLOptionUniversalLinksOnly];
-
-    [self openURL:launcher
-          options:launchOptions
-completionHandler:^(BOOL success) {
-        if (success) {
-            if (completion) completion(YES);
-            return;
-        }
-
-        NSURL *branchURL = ATBranchHomeURL(url);
-        NSMutableDictionary *branchOptions = options ? [options mutableCopy] : [NSMutableDictionary dictionary];
-        branchOptions[UIApplicationOpenURLOptionUniversalLinksOnly] = @YES;
-
-        [self openURL:branchURL
-              options:branchOptions
-    completionHandler:^(BOOL branchSuccess) {
-            if (completion) completion(branchSuccess);
-        }];
-    }];
+    %orig(launcher, launchOptions, completion);
 }
 
 - (BOOL)openURL:(NSURL *)url {
@@ -351,19 +375,13 @@ completionHandler:^(BOOL success) {
     }
 
     NSString *name = ATTrailName(url);
-    if (!name.length) {
-        NSURL *branchURL = ATBranchHomeURL(url);
-        return %orig(branchURL);
-    }
+    if (!name.length) return %orig;
 
     ATStorePending(name);
+    if (ATLaunchAllTrailsWithoutURL()) return YES;
 
-    NSURL *launcher = [NSURL URLWithString:@"alltrails://"];
-    BOOL launched = %orig(launcher);
-    if (launched) return YES;
-
-    NSURL *branchURL = ATBranchHomeURL(url);
-    return %orig(branchURL);
+    NSURL *launcher = [NSURL URLWithString:@"alltrails://screen/explore"];
+    return %orig(launcher);
 }
 
 %end
