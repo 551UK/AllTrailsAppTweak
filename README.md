@@ -1,6 +1,6 @@
 # AllTrailsLinkFix
 
-This tweak fixes AllTrails app trail links on rootless iOS 16 so tapping a trail URL opens the exact trail directly inside AllTrails instead of only launching the app. They changed the URL scheming on newer verions. However this version is cracked and works perfectly.
+This tweak fixes the AllTrails app trail links on rootless iOS 16 so tapping a trail URL opens the exact trail directly inside AllTrails instead of only launching the app. They changed the URL scheming on newer verions. However this version is cracked and works perfectly.
 
 Built specifically for the **premium-unlocked AllTrails 23.2.40 IPA** this project was tested against. The tweak carries the complete shared web URL into AllTrails and hands it to the app's native website-link parser, so long regional/share links open the correct trail.
 
