@@ -63,7 +63,6 @@ static NSURL *ATCanonicalURL(NSURL *url) {
     components.scheme = @"https";
     components.host = @"www.alltrails.com";
     components.path = [@"/" stringByAppendingString:route];
-    components.query = url.query;
     return components.URL;
 }
 
@@ -105,9 +104,7 @@ static BOOL ATWritePendingURL(NSURL *url) {
         NSUInteger offset = i * 8;
         NSUInteger count = MIN((NSUInteger)8, data.length - offset);
         memcpy(&word, bytes + offset, count);
-        if (!ATSetState(ATStateKey([NSString stringWithFormat:@"chunk.%lu", (unsigned long)i]), word)) {
-            return NO;
-        }
+        if (!ATSetState(ATStateKey([NSString stringWithFormat:@"chunk.%lu", (unsigned long)i]), word)) return NO;
     }
 
     if (!ATSetState(ATStateKey(@"length"), (uint64_t)data.length)) return NO;
@@ -196,6 +193,7 @@ static NSDictionary *ATBranchParams(NSURL *url) {
         @"$fallback_url": canonicalString,
         @"$desktop_url": canonicalString,
         @"$deeplink_path": route,
+        @"$ios_deeplink_path": route,
         @"deeplink_path": route,
         @"path": route,
         @"url": canonicalString,
@@ -213,6 +211,15 @@ static BOOL ATFeedGeneratedBranchURL(NSString *urlString, NSUInteger generation)
 
     id branch = ATBranchInstance();
     if (!branch) return NO;
+
+    SEL newSession = NSSelectorFromString(@"handleDeepLinkWithNewSession:");
+    if ([branch respondsToSelector:newSession]) {
+        BOOL handled = ((BOOL (*)(id, SEL, id))objc_msgSend)(branch, newSession, url);
+        if (handled) {
+            ATClearPending(generation);
+            return YES;
+        }
+    }
 
     SEL handle = NSSelectorFromString(@"handleDeepLink:");
     if ([branch respondsToSelector:handle]) {
@@ -239,6 +246,15 @@ static BOOL ATFeedGeneratedBranchURL(NSString *urlString, NSUInteger generation)
 
 static void ATRetryBranchRoute(NSUInteger attempt);
 
+static void ATBranchGenerationFinished(NSUInteger generation, NSUInteger attempt, NSString *shortURL, NSError *error) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (generation != ATRouteGeneration) return;
+        ATRouteInFlight = NO;
+        if (!error && shortURL.length && ATFeedGeneratedBranchURL(shortURL, generation)) return;
+        ATRetryBranchRoute(attempt + 1);
+    });
+}
+
 static void ATGenerateBranchLink(NSUInteger generation, NSUInteger attempt) {
     if (generation != ATRouteGeneration || !ATPendingURL) return;
 
@@ -250,54 +266,48 @@ static void ATGenerateBranchLink(NSUInteger generation, NSUInteger attempt) {
         return;
     }
 
-    SEL asyncSelector = NSSelectorFromString(@"getShortURLWithParams:andCallback:");
-    if ([branch respondsToSelector:asyncSelector]) {
-        ATRouteInFlight = YES;
-        void (^callback)(NSString *, NSError *) = ^(NSString *shortURL, NSError *error) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (generation != ATRouteGeneration) return;
-                ATRouteInFlight = NO;
-                if (!error && ATFeedGeneratedBranchURL(shortURL, generation)) return;
-                ATRetryBranchRoute(attempt + 1);
-            });
-        };
-        ((void (*)(id, SEL, id, id))objc_msgSend)(branch, asyncSelector, params, callback);
+    void (^callback)(NSString *, NSError *) = ^(NSString *shortURL, NSError *error) {
+        ATBranchGenerationFinished(generation, attempt, shortURL, error);
+    };
 
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            if (generation == ATRouteGeneration && ATRouteInFlight && ATPendingURL) {
-                ATRouteInFlight = NO;
-                ATRetryBranchRoute(attempt + 1);
-            }
-        });
-        return;
+    SEL fullSelector = NSSelectorFromString(@"getShortURLWithParams:andTags:andChannel:andFeature:andStage:andCallback:");
+    if ([branch respondsToSelector:fullSelector]) {
+        ATRouteInFlight = YES;
+        ((void (*)(id, SEL, id, id, id, id, id, id))objc_msgSend)(branch,
+                                                                  fullSelector,
+                                                                  params,
+                                                                  nil,
+                                                                  @"alltrailsapptweak",
+                                                                  @"deeplink",
+                                                                  nil,
+                                                                  callback);
+    } else {
+        SEL legacySelector = NSSelectorFromString(@"getShortURLWithParams:andCallback:");
+        if ([branch respondsToSelector:legacySelector]) {
+            ATRouteInFlight = YES;
+            ((void (*)(id, SEL, id, id))objc_msgSend)(branch, legacySelector, params, callback);
+        } else {
+            ATRouteInFlight = NO;
+            ATRetryBranchRoute(attempt + 1);
+            return;
+        }
     }
 
-    SEL syncSelector = NSSelectorFromString(@"getShortURLWithParams:");
-    if ([branch respondsToSelector:syncSelector]) {
-        ATRouteInFlight = YES;
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-            NSString *shortURL = ((id (*)(id, SEL, id))objc_msgSend)(branch, syncSelector, params);
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (generation != ATRouteGeneration) return;
-                ATRouteInFlight = NO;
-                if (ATFeedGeneratedBranchURL(shortURL, generation)) return;
-                ATRetryBranchRoute(attempt + 1);
-            });
-        });
-        return;
-    }
-
-    ATRouteInFlight = NO;
-    ATRetryBranchRoute(attempt + 1);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (generation == ATRouteGeneration && ATRouteInFlight && ATPendingURL) {
+            ATRouteInFlight = NO;
+            ATRetryBranchRoute(attempt + 1);
+        }
+    });
 }
 
 static void ATRetryBranchRoute(NSUInteger attempt) {
     if (!ATIsAllTrailsProcess() || !ATPendingURL || ATRouteInFlight) return;
-    if (attempt >= 24) return;
+    if (attempt >= 20) return;
 
     NSUInteger generation = ATRouteGeneration;
-    NSTimeInterval delay = attempt == 0 ? 1.5 : 0.5;
+    NSTimeInterval delay = attempt == 0 ? 1.0 : 0.6;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (generation != ATRouteGeneration || !ATPendingURL || ATRouteInFlight) return;
