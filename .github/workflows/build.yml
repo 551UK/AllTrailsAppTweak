@@ -25,7 +25,24 @@ jobs:
           theos-sdks-branch: master
 
       - name: Build rootless package
-        run: make clean package FINALPACKAGE=1
+        shell: bash
+        run: |
+          set +e
+          make clean package FINALPACKAGE=1 > build.log 2>&1
+          status=$?
+          cat build.log
+          exit $status
+
+      - name: Save build error
+        if: failure()
+        shell: bash
+        run: |
+          tail -n 250 build.log > build-error.log || true
+          git config user.name "551"
+          git config user.email "actions@github.com"
+          git add build-error.log
+          git commit -m "Record build error [skip ci]" || true
+          git push || true
 
       - name: Validate package
         run: |
