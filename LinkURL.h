@@ -45,9 +45,9 @@ static NSURL *ATIncomingURL(NSURL *url) {
     NSURLComponents *c = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
     if (![c.scheme.lowercaseString isEqualToString:@"alltrails"]) return url;
     if ([c.host.lowercaseString isEqualToString:@"551-open"]) {
-        NSArray *items = c.queryItems;
-        if (items.count == 1 && [items[0] name] && [[items[0] name] isEqualToString:@"url"]) {
-            NSURL *result = ATCanonicalTrailURL([NSURL URLWithString:[items[0] value]]);
+        NSArray<NSURLQueryItem *> *items = c.queryItems;
+        if (items.count == 1 && [items.firstObject.name isEqualToString:@"url"]) {
+            NSURL *result = ATCanonicalTrailURL([NSURL URLWithString:items.firstObject.value]);
             if (result) return result;
         }
         return url;
