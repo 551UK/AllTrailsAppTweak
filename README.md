@@ -1,7 +1,7 @@
 # AllTrailsAppTweak
 
-AllTrails hiking app companion tweak for older/rootless iOS setups.
+Opens shared AllTrails trail links directly in AllTrails on rootless iOS 16. Version 2.0 carries the complete trail URL into the app and uses its native website-link parser. It replaces the old search-screen automation.
 
-Modern AllTrails trail links can open the older iOS app but fail on its obsolete trail-detail router with “Content unavailable”. Version 1.0.5 bypasses that router: it extracts the trail name from the link, launches AllTrails, switches to Explore/search and submits the trail name inside the app.
+Install the DEB and respring. Allow the tweak in both the app you open links from and AllTrails if using Choicy. Inspecting the supplied IPA identified AllTrails **25.2.40 (86784)**; its filename said 23.2.40.
 
-Designed for Dopamine/rootless iOS 15+.
+Built for arm64 and arm64e. Device testing is still required for both a closed and an already-running AllTrails app.

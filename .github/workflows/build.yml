@@ -18,6 +18,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Test URL routing
+        run: |
+          clang -fobjc-arc -framework Foundation tests/LinkURLTests.m -o "$RUNNER_TEMP/link-url-tests"
+          "$RUNNER_TEMP/link-url-tests"
+
       - name: Set up Theos
         uses: Randomblock1/theos-action@v1
         with:
@@ -94,5 +99,6 @@ jobs:
           else
             gh release create "$current" packages/*.deb \
               --target "$GITHUB_SHA" --title "AllTrailsAppTweak ${version}" \
-              --notes "Rootless AllTrails link fix for older app versions."
+              --notes "Rebuilt from IPA inspection. Carries the full trail URL into the native website-link parser. Device verification required."
           fi
+
