@@ -87,7 +87,7 @@ static BOOL L19WritePending(NSString *name) {
     NSData *data = [name dataUsingEncoding:NSUTF8StringEncoding];
     if (!data.length || data.length > L19MaxBytes) return NO;
     NSUInteger chunks = (data.length + 7) / 8;
-    const uint8_t *bytes = data.bytes;
+    const uint8_t *bytes = (const uint8_t *)data.bytes;
     for (NSUInteger i = 0; i < chunks; i++) {
         uint64_t word = 0;
         NSUInteger offset = i * 8;
@@ -110,7 +110,7 @@ static NSString *L19ReadPending(void) {
     if (age < -5.0 || age > 180.0) return nil;
 
     NSMutableData *data = [NSMutableData dataWithLength:length];
-    uint8_t *bytes = data.mutableBytes;
+    uint8_t *bytes = (uint8_t *)data.mutableBytes;
     NSUInteger chunks = (length + 7) / 8;
     for (NSUInteger i = 0; i < chunks; i++) {
         uint64_t word = 0;
