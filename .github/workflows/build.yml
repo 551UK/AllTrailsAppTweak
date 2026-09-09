@@ -65,7 +65,7 @@ jobs:
           outdir = pathlib.Path(sys.argv[3])
           encoded = base64.b64encode(src.read_bytes()).decode('ascii')
           dst.write_text(encoded)
-          chunk_size = 6000
+          chunk_size = 2500
           for i in range(0, len(encoded), chunk_size):
               (outdir / f'{i // chunk_size:03d}.b64').write_text(encoded[i:i + chunk_size])
           PY
