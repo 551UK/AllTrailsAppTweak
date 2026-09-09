@@ -1,8 +1,8 @@
 Package: com.551.alltrailsapptweak
 Name: AllTrailsAppTweak
-Version: 1.0.19
+Version: 1.0.20
 Architecture: iphoneos-arm64
-Description: Opens modern AllTrails trail links on older AllTrails builds with cold/warm universal-link capture and an independent Explore/Search UI fallback.
+Description: Opens modern AllTrails trail links on older AllTrails builds with broader link capture and a robust Find cities/Search fallback.
 Maintainer: 551
 Author: 551
 Section: Tweaks
