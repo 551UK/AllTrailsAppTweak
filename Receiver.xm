@@ -251,7 +251,7 @@ static void ATRShowLoadedToast(void) {
     ATRDidShowLoadedToast = YES;
 
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
-    [label setText:@"AllTrails link fix 1.0.17 loaded"];
+    [label setText:@"AllTrails link fix 1.0.18 loaded"];
     [label setTextAlignment:NSTextAlignmentCenter];
     [label setFont:[UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold]];
     [label setTextColor:[UIColor whiteColor]];
