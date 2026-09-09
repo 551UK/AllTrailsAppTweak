@@ -5,11 +5,11 @@ THEOS_PLATFORM_DEB_COMPRESSION_TYPE = gzip
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = AllTrailsAppTweak
-AllTrailsAppTweak_FILES = NativeLinks.m
-AllTrailsAppTweak_LIBRARIES = substrate
-AllTrailsAppTweak_FRAMEWORKS = Foundation UIKit
-AllTrailsAppTweak_CFLAGS = -fobjc-arc
+TWEAK_NAME = AllTrailsLinkFix
+AllTrailsLinkFix_FILES = NativeLinks.m
+AllTrailsLinkFix_LIBRARIES = substrate
+AllTrailsLinkFix_FRAMEWORKS = Foundation UIKit
+AllTrailsLinkFix_CFLAGS = -fobjc-arc
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
