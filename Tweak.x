@@ -55,9 +55,9 @@ static NSURL *ATUniversalLinkURL(NSURL *url) {
     NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
     if (!components) return url;
 
-    // Preserve the original AllTrails share path and query parameters.
-    // In particular, do not remove /en-gb or the share token before iOS asks
-    // AllTrails to handle the universal link.
+    // Keep the exact share path and query. The previous build stripped the
+    // locale and share token before asking iOS to hand the URL to AllTrails,
+    // which can make older app/AASA combinations reject the link.
     components.scheme = @"https";
     if ([components.host.lowercaseString isEqualToString:@"alltrails.com"]) {
         components.host = @"www.alltrails.com";
@@ -75,14 +75,14 @@ static NSURL *ATDirectDeepLinkURL(NSURL *webURL) {
 
     if (!path.length) return [NSURL URLWithString:@"alltrails://"];
 
-    // Mirror the web route directly into the AllTrails custom scheme.
+    // Mirror the canonical web route directly into the app scheme.
     // Example:
     //   https://www.alltrails.com/en-gb/trail/england/cumbria/foo
     // becomes:
     //   alltrails://trail/england/cumbria/foo
     //
-    // The previous alltrails://screen/trail/... form launched AllTrails but
-    // resolved to its "Content unavailable" page.
+    // The old alltrails://screen/trail/... fallback launched AllTrails but
+    // landed on its "Content unavailable" screen.
     NSURLComponents *components = [[NSURLComponents alloc] init];
     components.scheme = @"alltrails";
 
@@ -94,38 +94,10 @@ static NSURL *ATDirectDeepLinkURL(NSURL *webURL) {
         }
     }
 
-    // Keep AllTrails' own share parameters in case the installed version uses
-    // them to resolve the shared trail.
+    // Preserve AllTrails' share parameters in case this installed version
+    // uses the share token while resolving the trail.
     components.query = webURL.query;
     return components.URL ?: [NSURL URLWithString:@"alltrails://"];
-}
-
-static void ATOpenAllTrailsURL(UIApplication *application,
-                               NSURL *url,
-                               NSDictionary<UIApplicationOpenExternalURLOptionsKey, id> *options,
-                               void (^completion)(BOOL)) {
-    NSURL *universalURL = ATUniversalLinkURL(url);
-    NSMutableDictionary *universalOptions = options ? [options mutableCopy] : [NSMutableDictionary dictionary];
-    universalOptions[UIApplicationOpenURLOptionUniversalLinksOnly] = @YES;
-
-    [application openURL:universalURL
-                 options:universalOptions
-       completionHandler:^(BOOL success) {
-        if (success) {
-            if (completion) completion(YES);
-            return;
-        }
-
-        NSURL *deepLinkURL = ATDirectDeepLinkURL(universalURL);
-        NSMutableDictionary *deepLinkOptions = options ? [options mutableCopy] : [NSMutableDictionary dictionary];
-        [deepLinkOptions removeObjectForKey:UIApplicationOpenURLOptionUniversalLinksOnly];
-
-        [application openURL:deepLinkURL
-                     options:deepLinkOptions
-           completionHandler:^(BOOL deepLinkSuccess) {
-            if (completion) completion(deepLinkSuccess);
-        }];
-    }];
 }
 
 %hook UIApplication
@@ -153,8 +125,8 @@ completionHandler:(void (^)(BOOL success))completion {
         NSMutableDictionary *deepLinkOptions = options ? [options mutableCopy] : [NSMutableDictionary dictionary];
         [deepLinkOptions removeObjectForKey:UIApplicationOpenURLOptionUniversalLinksOnly];
 
-        // deepLinkURL uses the alltrails:// scheme, so it will not re-enter
-        // the AllTrails-web-URL branch of this hook.
+        // This is now an alltrails:// URL, so it bypasses the web-URL branch
+        // of this hook and goes straight to the original implementation.
         [self openURL:deepLinkURL
               options:deepLinkOptions
     completionHandler:^(BOOL deepLinkSuccess) {
@@ -170,10 +142,11 @@ completionHandler:(void (^)(BOOL success))completion {
         return %orig;
     }
 
-    // Do not force legacy callers straight into a custom scheme. Route them
-    // through the same universal-link-first path used by the modern API.
-    ATOpenAllTrailsURL(self, url, nil, nil);
-    return YES;
+    // The deprecated synchronous API cannot supply UniversalLinksOnly plus a
+    // completion handler. Use the corrected direct scheme route rather than
+    // the broken alltrails://screen/... form.
+    NSURL *deepLinkURL = ATDirectDeepLinkURL(ATUniversalLinkURL(url));
+    return %orig(deepLinkURL);
 }
 
 %end
