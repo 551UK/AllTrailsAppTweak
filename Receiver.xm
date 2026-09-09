@@ -157,7 +157,11 @@ static IMP ATRGetOriginalIMP(id object, SEL selector) {
     Class cls = object_getClass(object);
     while (cls) {
         NSValue *value = ATROriginalIMPs[ATRHookKey(cls, selector)];
-        if (value) return [value pointerValue];
+        if (value) {
+            IMP original = NULL;
+            [value getValue:&original];
+            return original;
+        }
         cls = class_getSuperclass(cls);
     }
     return NULL;
@@ -182,7 +186,7 @@ static void ATRHookSelector(Class cls, SEL selector, IMP replacement) {
     Method target = class_getInstanceMethod(cls, selector);
     if (!target) return;
 
-    ATROriginalIMPs[key] = [NSValue valueWithPointer:original];
+    ATROriginalIMPs[key] = [NSValue value:&original withObjCType:@encode(IMP)];
     method_setImplementation(target, replacement);
     [ATRHookedSelectors addObject:key];
 }
