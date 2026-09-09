@@ -359,7 +359,8 @@ completionHandler:^(BOOL success) {
     ATStorePending(name);
 
     NSURL *launcher = [NSURL URLWithString:@"alltrails://"];
-    if (%orig(launcher)) return YES;
+    BOOL launched = %orig(launcher);
+    if (launched) return YES;
 
     NSURL *branchURL = ATBranchHomeURL(url);
     return %orig(branchURL);
