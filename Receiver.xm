@@ -78,7 +78,7 @@ static BOOL ATRWritePendingName(NSString *name) {
     NSUInteger chunks = (data.length + 7) / 8;
     if (chunks > ATRMaxChunks) return NO;
 
-    const uint8_t *bytes = data.bytes;
+    const uint8_t *bytes = (const uint8_t *)data.bytes;
     for (NSUInteger i = 0; i < chunks; i++) {
         uint64_t word = 0;
         NSUInteger offset = i * 8;
