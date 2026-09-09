@@ -36,8 +36,9 @@ static NSString *ATCanonicalPath(NSURL *url) {
     NSString *path = url.path ?: @"/";
     NSArray<NSString *> *parts = [path componentsSeparatedByString:@"/"];
 
-    // Newer AllTrails share links can use /en-gb/trail/... while older
-    // AllTrails builds expect the legacy /trail/... route.
+    // AllTrails web links may contain a locale prefix such as /en-gb/.
+    // Branch's deep-link path is kept locale-free so the app router sees the
+    // actual content route rather than the website localisation route.
     if (parts.count >= 4 &&
         ATLooksLikeLocale(parts[1]) &&
         [parts[2].lowercaseString isEqualToString:@"trail"]) {
@@ -50,33 +51,71 @@ static NSString *ATCanonicalPath(NSURL *url) {
     return path;
 }
 
-static NSURL *ATUniversalLinkURL(NSURL *url) {
+static NSURL *ATNormalizedWebURL(NSURL *url) {
     NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
     if (!components) return url;
 
-    // IMPORTANT: give the older app the legacy path, not the modern
-    // locale-prefixed path. UIApplication's completion handler only tells us
-    // that an app accepted the universal link; it cannot tell us that the
-    // older AllTrails router later displayed "Content unavailable".
-    // Keep the share/query parameters intact while removing only the locale.
     components.scheme = @"https";
     components.host = @"www.alltrails.com";
-    components.path = ATCanonicalPath(url);
     components.fragment = nil;
-
     return components.URL ?: url;
 }
 
-static NSURL *ATDirectDeepLinkURL(NSURL *webURL) {
-    NSString *path = ATCanonicalPath(webURL);
+static NSString *ATDeepLinkPath(NSURL *url) {
+    NSString *path = ATCanonicalPath(url);
     while ([path hasPrefix:@"/"]) {
         path = [path substringFromIndex:1];
     }
+    return path;
+}
 
+static NSURL *ATBranchURL(NSURL *webURL) {
+    NSURL *normalized = ATNormalizedWebURL(webURL);
+    NSString *absolute = normalized.absoluteString ?: webURL.absoluteString ?: @"";
+    NSString *deepPath = ATDeepLinkPath(normalized);
+
+    NSURLComponents *components = [[NSURLComponents alloc] init];
+    components.scheme = @"https";
+    components.host = @"alltrails.app.link";
+    components.path = @"/";
+
+    NSMutableArray<NSURLQueryItem *> *items = [NSMutableArray array];
+
+    // AllTrails uses Branch for app-link handoff. Give Branch both the real
+    // website URL and a locale-free deep-link path so AllTrails receives the
+    // same kind of payload its own share links are designed around.
+    if (absolute.length) {
+        [items addObject:[NSURLQueryItem queryItemWithName:@"$canonical_url" value:absolute]];
+        [items addObject:[NSURLQueryItem queryItemWithName:@"$fallback_url" value:absolute]];
+        [items addObject:[NSURLQueryItem queryItemWithName:@"$desktop_url" value:absolute]];
+        [items addObject:[NSURLQueryItem queryItemWithName:@"url" value:absolute]];
+    }
+
+    if (deepPath.length) {
+        [items addObject:[NSURLQueryItem queryItemWithName:@"$deeplink_path" value:deepPath]];
+        [items addObject:[NSURLQueryItem queryItemWithName:@"deeplink_path" value:deepPath]];
+        [items addObject:[NSURLQueryItem queryItemWithName:@"path" value:deepPath]];
+    }
+
+    NSURLComponents *source = [NSURLComponents componentsWithURL:normalized resolvingAgainstBaseURL:NO];
+    for (NSURLQueryItem *item in source.queryItems ?: @[]) {
+        if ([item.name isEqualToString:@"sh"] && item.value.length) {
+            [items addObject:[NSURLQueryItem queryItemWithName:@"sh" value:item.value]];
+            break;
+        }
+    }
+
+    [items addObject:[NSURLQueryItem queryItemWithName:@"~feature" value:@"share"]];
+    [items addObject:[NSURLQueryItem queryItemWithName:@"~channel" value:@"alltrails_virality"]];
+    components.queryItems = items;
+
+    return components.URL ?: normalized;
+}
+
+static NSURL *ATDirectDeepLinkURL(NSURL *webURL) {
+    NSString *path = ATDeepLinkPath(webURL);
     if (!path.length) return [NSURL URLWithString:@"alltrails://"];
 
-    // Mirror the legacy web route directly into the registered AllTrails
-    // custom scheme as a fallback if iOS cannot hand off the universal link.
     NSURLComponents *components = [[NSURLComponents alloc] init];
     components.scheme = @"alltrails";
 
@@ -103,9 +142,9 @@ completionHandler:(void (^)(BOOL success))completion {
         return;
     }
 
-    NSURL *universalURL = ATUniversalLinkURL(url);
-    NSMutableDictionary *universalOptions = options ? [options mutableCopy] : [NSMutableDictionary dictionary];
-    universalOptions[UIApplicationOpenURLOptionUniversalLinksOnly] = @YES;
+    NSURL *branchURL = ATBranchURL(url);
+    NSMutableDictionary *branchOptions = options ? [options mutableCopy] : [NSMutableDictionary dictionary];
+    branchOptions[UIApplicationOpenURLOptionUniversalLinksOnly] = @YES;
 
     void (^wrappedCompletion)(BOOL) = ^(BOOL success) {
         if (success) {
@@ -113,12 +152,12 @@ completionHandler:(void (^)(BOOL success))completion {
             return;
         }
 
-        NSURL *deepLinkURL = ATDirectDeepLinkURL(universalURL);
+        // If Branch universal-link handoff itself is unavailable, retain the
+        // direct custom-scheme route as a last-resort launcher.
+        NSURL *deepLinkURL = ATDirectDeepLinkURL(url);
         NSMutableDictionary *deepLinkOptions = options ? [options mutableCopy] : [NSMutableDictionary dictionary];
         [deepLinkOptions removeObjectForKey:UIApplicationOpenURLOptionUniversalLinksOnly];
 
-        // This is now an alltrails:// URL, so it bypasses the web-URL branch
-        // of this hook and goes straight to the original implementation.
         [self openURL:deepLinkURL
               options:deepLinkOptions
     completionHandler:^(BOOL deepLinkSuccess) {
@@ -126,7 +165,7 @@ completionHandler:(void (^)(BOOL success))completion {
         }];
     };
 
-    %orig(universalURL, universalOptions, wrappedCompletion);
+    %orig(branchURL, branchOptions, wrappedCompletion);
 }
 
 - (BOOL)openURL:(NSURL *)url {
@@ -134,8 +173,8 @@ completionHandler:(void (^)(BOOL success))completion {
         return %orig;
     }
 
-    NSURL *deepLinkURL = ATDirectDeepLinkURL(ATUniversalLinkURL(url));
-    return %orig(deepLinkURL);
+    NSURL *branchURL = ATBranchURL(url);
+    return %orig(branchURL);
 }
 
 %end
