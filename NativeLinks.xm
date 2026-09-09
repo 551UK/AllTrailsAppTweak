@@ -19,7 +19,8 @@ static NSDictionary *ATLaunchOptions(NSDictionary *options) {
         if (success) { if (completion) completion(YES); }
         else { %orig(url, options, completion); }
     };
-    %orig(transport, ATLaunchOptions(options), result);
+    NSDictionary *launchOptions = ATLaunchOptions(options);
+    %orig(transport, launchOptions, result);
 }
 - (BOOL)openURL:(NSURL *)url {
     NSURL *transport = ATTransportURL(url);
@@ -34,18 +35,19 @@ static NSDictionary *ATLaunchOptions(NSDictionary *options) {
 // The app reads this property during both scene connection (cold launch)
 // and scene:openURLContexts: (warm launch). Keep the real context/options.
 %hook UIOpenURLContext
-- (NSURL *)URL { return ATIncomingURL(%orig); }
+- (NSURL *)URL { NSURL *url = %orig; return ATIncomingURL(url); }
 %end
 
 %hook NSUserActivity
-- (NSURL *)webpageURL { return ATIncomingURL(%orig); }
+- (NSURL *)webpageURL { NSURL *url = %orig; return ATIncomingURL(url); }
 %end
 %end
 
 %group AllTrailsDelegates
 %hook ATAppDelegate
 - (BOOL)application:(UIApplication *)app openURL:(NSURL *)url options:(NSDictionary *)options {
-    return %orig(app, ATIncomingURL(url), options);
+    NSURL *normalized = ATIncomingURL(url);
+    return %orig(app, normalized, options);
 }
 %end
 %end
@@ -54,14 +56,15 @@ static NSDictionary *ATLaunchOptions(NSDictionary *options) {
 // by scheme; the parser must receive that same normalized URL afterwards.
 %group ParserFactory
 %hook ATParserFactory
-- (id)parserForURL:(NSURL *)url { return %orig(ATIncomingURL(url)); }
+- (id)parserForURL:(NSURL *)url { NSURL *normalized = ATIncomingURL(url); return %orig(normalized); }
 %end
 %end
 
 %group HostParser
 %hook ATHostParser
 - (void)featureForURL:(NSURL *)url source:(NSString *)source completion:(id)completion {
-    %orig(ATIncomingURL(url), source, completion);
+    NSURL *normalized = ATIncomingURL(url);
+    %orig(normalized, source, completion);
 }
 %end
 %end
