@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <notify.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #include <string.h>
 
 static NSString * const ATRBundleID = @"com.alltrails.AllTrails";
@@ -12,21 +13,21 @@ static const NSUInteger ATRMaxChunks = 128;
 
 static NSString *ATRLastCapturedURL = nil;
 static NSTimeInterval ATRLastCaptureTime = 0;
-static NSMutableDictionary<NSString *, NSValue *> *ATROriginalIMPs = nil;
-static NSMutableSet<NSString *> *ATRHookedSelectors = nil;
+static NSMutableDictionary *ATROriginalIMPs = nil;
+static NSMutableSet *ATRHookedSelectors = nil;
 static BOOL ATRDidShowLoadedToast = NO;
 
 static BOOL ATRIsAllTrailsProcess(void) {
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-    if (!bundleID.length) return NO;
+    if (![bundleID length]) return NO;
     return [bundleID isEqualToString:ATRBundleID] ||
            [bundleID caseInsensitiveCompare:@"com.alltrails.alltrails"] == NSOrderedSame;
 }
 
 static BOOL ATRIsAllTrailsWebURL(NSURL *url) {
     if (!url) return NO;
-    NSString *scheme = url.scheme.lowercaseString;
-    NSString *host = url.host.lowercaseString;
+    NSString *scheme = [[url scheme] lowercaseString];
+    NSString *host = [[url host] lowercaseString];
     if (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) return NO;
     return [host isEqualToString:@"alltrails.com"] ||
            [host isEqualToString:@"www.alltrails.com"] ||
@@ -35,28 +36,26 @@ static BOOL ATRIsAllTrailsWebURL(NSURL *url) {
 
 static NSString *ATRTrailNameFromURL(NSURL *url) {
     if (!ATRIsAllTrailsWebURL(url)) return nil;
-
-    NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    for (NSString *part in [url.path componentsSeparatedByString:@"/"]) {
-        if (part.length) [parts addObject:part];
+    NSMutableArray *parts = [NSMutableArray array];
+    for (NSString *part in [[url path] componentsSeparatedByString:@"/"]) {
+        if ([part length]) [parts addObject:part];
     }
 
-    NSInteger trailIndex = NSNotFound;
-    for (NSUInteger i = 0; i < parts.count; i++) {
-        if ([parts[i].lowercaseString isEqualToString:@"trail"]) {
-            trailIndex = (NSInteger)i;
+    BOOL hasTrailComponent = NO;
+    for (NSString *part in parts) {
+        if ([[part lowercaseString] isEqualToString:@"trail"]) {
+            hasTrailComponent = YES;
             break;
         }
     }
-    if (trailIndex == NSNotFound || (NSUInteger)trailIndex + 1 >= parts.count) return nil;
+    if (!hasTrailComponent || [parts count] < 2) return nil;
 
-    NSString *slug = parts.lastObject;
-    if (!slug.length) return nil;
-
+    NSString *slug = [parts lastObject];
+    if (![slug length]) return nil;
     NSString *decoded = [slug stringByRemovingPercentEncoding] ?: slug;
     NSString *name = [decoded stringByReplacingOccurrencesOfString:@"-" withString:@" "];
     name = [name stringByReplacingOccurrencesOfString:@"_" withString:@" "];
-    while ([name containsString:@"  "]) {
+    while ([name rangeOfString:@"  "].location != NSNotFound) {
         name = [name stringByReplacingOccurrencesOfString:@"  " withString:@" "];
     }
     return [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -68,44 +67,43 @@ static NSString *ATRStateKey(NSString *suffix) {
 
 static BOOL ATRSetState(NSString *name, uint64_t state) {
     int token = 0;
-    if (notify_register_check(name.UTF8String, &token) != 0) return NO;
+    if (notify_register_check([name UTF8String], &token) != 0) return NO;
     int result = notify_set_state(token, state);
     notify_cancel(token);
     return result == 0;
 }
 
 static BOOL ATRWritePendingName(NSString *name) {
-    if (!name.length) return NO;
-
+    if (![name length]) return NO;
     NSData *data = [name dataUsingEncoding:NSUTF8StringEncoding];
-    if (!data.length || data.length > ATRMaxPendingBytes) return NO;
+    if (![data length] || [data length] > ATRMaxPendingBytes) return NO;
 
-    NSUInteger chunks = (data.length + 7) / 8;
+    NSUInteger chunks = ([data length] + 7) / 8;
     if (chunks > ATRMaxChunks) return NO;
+    const uint8_t *bytes = (const uint8_t *)[data bytes];
 
-    const uint8_t *bytes = (const uint8_t *)data.bytes;
     for (NSUInteger i = 0; i < chunks; i++) {
         uint64_t word = 0;
         NSUInteger offset = i * 8;
-        NSUInteger count = MIN((NSUInteger)8, data.length - offset);
+        NSUInteger count = MIN((NSUInteger)8, [data length] - offset);
         memcpy(&word, bytes + offset, count);
-        if (!ATRSetState(ATRStateKey([NSString stringWithFormat:@"chunk.%lu", (unsigned long)i]), word)) return NO;
+        NSString *key = ATRStateKey([NSString stringWithFormat:@"chunk.%lu", (unsigned long)i]);
+        if (!ATRSetState(key, word)) return NO;
     }
 
-    if (!ATRSetState(ATRStateKey(@"length"), (uint64_t)data.length)) return NO;
+    if (!ATRSetState(ATRStateKey(@"length"), (uint64_t)[data length])) return NO;
     if (!ATRSetState(ATRStateKey(@"time"), (uint64_t)[[NSDate date] timeIntervalSince1970])) return NO;
-    notify_post(ATRSearchNotify.UTF8String);
+    notify_post([ATRSearchNotify UTF8String]);
     return YES;
 }
 
 static void ATRCaptureURL(NSURL *url) {
     if (!ATRIsAllTrailsProcess() || !url) return;
-
     NSString *trailName = ATRTrailNameFromURL(url);
-    if (!trailName.length) return;
+    if (![trailName length]) return;
 
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    NSString *absolute = url.absoluteString ?: @"";
+    NSString *absolute = [url absoluteString] ?: @"";
     if ([ATRLastCapturedURL isEqualToString:absolute] && (now - ATRLastCaptureTime) < 8.0) return;
 
     ATRLastCapturedURL = [absolute copy];
@@ -115,37 +113,35 @@ static void ATRCaptureURL(NSURL *url) {
 
 static void ATRCaptureObject(id object, NSUInteger depth) {
     if (!object || depth > 4) return;
-
     if ([object isKindOfClass:[NSURL class]]) {
         ATRCaptureURL((NSURL *)object);
         return;
     }
-
     if ([object isKindOfClass:[NSString class]]) {
         NSString *text = (NSString *)object;
         if ([text rangeOfString:@"alltrails.com" options:NSCaseInsensitiveSearch].location != NSNotFound) {
-            NSURL *url = [NSURL URLWithString:text];
-            ATRCaptureURL(url);
+            ATRCaptureURL([NSURL URLWithString:text]);
         }
         return;
     }
-
     if ([object isKindOfClass:[NSDictionary class]]) {
-        for (id key in (NSDictionary *)object) {
-            ATRCaptureObject([(NSDictionary *)object objectForKey:key], depth + 1);
-        }
+        NSDictionary *dict = (NSDictionary *)object;
+        for (id key in dict) ATRCaptureObject([dict objectForKey:key], depth + 1);
         return;
     }
-
-    if ([object isKindOfClass:[NSArray class]] || [object isKindOfClass:[NSSet class]]) {
-        for (id value in object) ATRCaptureObject(value, depth + 1);
+    if ([object isKindOfClass:[NSArray class]]) {
+        for (id value in (NSArray *)object) ATRCaptureObject(value, depth + 1);
+        return;
+    }
+    if ([object isKindOfClass:[NSSet class]]) {
+        for (id value in (NSSet *)object) ATRCaptureObject(value, depth + 1);
     }
 }
 
 static void ATRCaptureActivity(NSUserActivity *activity) {
     if (!activity) return;
-    ATRCaptureURL(activity.webpageURL);
-    ATRCaptureObject(activity.userInfo, 0);
+    ATRCaptureURL([activity webpageURL]);
+    ATRCaptureObject([activity userInfo], 0);
 }
 
 static NSString *ATRHookKey(Class cls, SEL selector) {
@@ -156,7 +152,7 @@ static IMP ATRGetOriginalIMP(id object, SEL selector) {
     if (!object || !selector) return NULL;
     Class cls = object_getClass(object);
     while (cls) {
-        NSValue *value = ATROriginalIMPs[ATRHookKey(cls, selector)];
+        NSValue *value = [ATROriginalIMPs objectForKey:ATRHookKey(cls, selector)];
         if (value) {
             IMP original = NULL;
             [value getValue:&original];
@@ -172,21 +168,18 @@ static void ATRHookSelector(Class cls, SEL selector, IMP replacement) {
     NSString *key = ATRHookKey(cls, selector);
     if ([ATRHookedSelectors containsObject:key]) return;
 
-    Method inherited = class_getInstanceMethod(cls, selector);
-    if (!inherited) return;
+    Method method = class_getInstanceMethod(cls, selector);
+    if (!method) return;
+    IMP original = method_getImplementation(method);
+    const char *types = method_getTypeEncoding(method);
+    if (!original || !types || original == replacement) return;
 
-    IMP original = method_getImplementation(inherited);
-    if (!original || original == replacement) return;
-    const char *types = method_getTypeEncoding(inherited);
-    if (!types) return;
-
-    // If the implementation is inherited, first copy it onto this class so we
-    // never replace a superclass method used by unrelated UIKit objects.
     class_addMethod(cls, selector, original, types);
     Method target = class_getInstanceMethod(cls, selector);
     if (!target) return;
 
-    ATROriginalIMPs[key] = [NSValue value:&original withObjCType:@encode(IMP)];
+    NSValue *boxed = [NSValue value:&original withObjCType:@encode(IMP)];
+    [ATROriginalIMPs setObject:boxed forKey:key];
     method_setImplementation(target, replacement);
     [ATRHookedSelectors addObject:key];
 }
@@ -215,8 +208,12 @@ static void ATRSceneContinue(id self, SEL _cmd, UIScene *scene, NSUserActivity *
 }
 
 static void ATRSceneOpenContexts(id self, SEL _cmd, UIScene *scene, NSSet *contexts) {
+    SEL urlSelector = NSSelectorFromString(@"URL");
     for (id context in contexts) {
-        if ([context respondsToSelector:@selector(URL)]) ATRCaptureURL([context URL]);
+        if ([context respondsToSelector:urlSelector]) {
+            NSURL *url = ((NSURL *(*)(id, SEL))objc_msgSend)(context, urlSelector);
+            ATRCaptureURL(url);
+        }
     }
     ATRSceneOpenContextsIMP original = (ATRSceneOpenContextsIMP)ATRGetOriginalIMP(self, _cmd);
     if (original) original(self, _cmd, scene, contexts);
@@ -225,33 +222,25 @@ static void ATRSceneOpenContexts(id self, SEL _cmd, UIScene *scene, NSSet *conte
 static void ATRInstallDelegateHooks(id delegate) {
     if (!delegate || !ATRIsAllTrailsProcess()) return;
     Class cls = object_getClass(delegate);
-    ATRHookSelector(cls,
-                    @selector(application:continueUserActivity:restorationHandler:),
-                    (IMP)ATRAppContinue);
-    ATRHookSelector(cls,
-                    @selector(application:openURL:options:),
-                    (IMP)ATRAppOpenURL);
-    ATRHookSelector(cls,
-                    @selector(scene:continueUserActivity:),
-                    (IMP)ATRSceneContinue);
-    ATRHookSelector(cls,
-                    @selector(scene:openURLContexts:),
-                    (IMP)ATRSceneOpenContexts);
+    ATRHookSelector(cls, @selector(application:continueUserActivity:restorationHandler:), (IMP)ATRAppContinue);
+    ATRHookSelector(cls, @selector(application:openURL:options:), (IMP)ATRAppOpenURL);
+    ATRHookSelector(cls, @selector(scene:continueUserActivity:), (IMP)ATRSceneContinue);
+    ATRHookSelector(cls, @selector(scene:openURLContexts:), (IMP)ATRSceneOpenContexts);
 }
 
 static UIWindow *ATRWindow(void) {
-    UIApplication *application = UIApplication.sharedApplication;
+    UIApplication *application = [UIApplication sharedApplication];
     if (@available(iOS 13.0, *)) {
-        for (UIScene *scene in application.connectedScenes) {
+        for (UIScene *scene in [application connectedScenes]) {
             if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-            for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-                if (window.isKeyWindow) return window;
+            for (UIWindow *window in [(UIWindowScene *)scene windows]) {
+                if ([window isKeyWindow]) return window;
             }
         }
     }
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    return application.keyWindow;
+    return [application keyWindow];
 #pragma clang diagnostic pop
 }
 
@@ -262,17 +251,17 @@ static void ATRShowLoadedToast(void) {
     ATRDidShowLoadedToast = YES;
 
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
-    label.text = @"AllTrails link fix 1.0.17 loaded";
-    label.textAlignment = NSTextAlignmentCenter;
-    label.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
-    label.textColor = UIColor.whiteColor;
-    label.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.90];
-    label.layer.cornerRadius = 10.0;
-    label.layer.masksToBounds = YES;
+    [label setText:@"AllTrails link fix 1.0.17 loaded"];
+    [label setTextAlignment:NSTextAlignmentCenter];
+    [label setFont:[UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold]];
+    [label setTextColor:[UIColor whiteColor]];
+    [label setBackgroundColor:[UIColor colorWithWhite:0.08 alpha:0.90]];
+    [[label layer] setCornerRadius:10.0];
+    [[label layer] setMasksToBounds:YES];
 
-    CGFloat width = MIN(CGRectGetWidth(window.bounds) - 32.0, 290.0);
-    CGFloat top = window.safeAreaInsets.top + 8.0;
-    label.frame = CGRectMake((CGRectGetWidth(window.bounds) - width) * 0.5, top, width, 34.0);
+    CGFloat width = MIN(CGRectGetWidth([window bounds]) - 32.0, 290.0);
+    CGFloat top = [window safeAreaInsets].top + 8.0;
+    [label setFrame:CGRectMake((CGRectGetWidth([window bounds]) - width) * 0.5, top, width, 34.0)];
     [window addSubview:label];
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -282,11 +271,16 @@ static void ATRShowLoadedToast(void) {
 
 static void ATRScanDelegates(void) {
     if (!ATRIsAllTrailsProcess()) return;
-    UIApplication *application = UIApplication.sharedApplication;
-    ATRInstallDelegateHooks(application.delegate);
+    UIApplication *application = [UIApplication sharedApplication];
+    ATRInstallDelegateHooks([application delegate]);
+
     if (@available(iOS 13.0, *)) {
-        for (UIScene *scene in application.connectedScenes) {
-            ATRInstallDelegateHooks(scene.delegate);
+        SEL delegateSelector = NSSelectorFromString(@"delegate");
+        for (UIScene *scene in [application connectedScenes]) {
+            if ([scene respondsToSelector:delegateSelector]) {
+                id delegate = ((id (*)(id, SEL))objc_msgSend)(scene, delegateSelector);
+                ATRInstallDelegateHooks(delegate);
+            }
         }
     }
 }
@@ -312,49 +306,28 @@ static void ATRScanDelegates(void) {
 
 %end
 
-%hook UIApplication
-
-- (void)setDelegate:(id)delegate {
-    %orig;
-    ATRInstallDelegateHooks(delegate);
-}
-
-%end
-
-%hook UIScene
-
-- (void)setDelegate:(id)delegate {
-    %orig;
-    ATRInstallDelegateHooks(delegate);
-}
-
-%end
-
 %ctor {
     if (!ATRIsAllTrailsProcess()) return;
 
-    ATROriginalIMPs = [NSMutableDictionary dictionary];
-    ATRHookedSelectors = [NSMutableSet set];
+    ATROriginalIMPs = [[NSMutableDictionary alloc] init];
+    ATRHookedSelectors = [[NSMutableSet alloc] init];
     %init;
 
     NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
-    [center addObserverForName:UIApplicationDidFinishLaunchingNotification
-                         object:nil
-                          queue:[NSOperationQueue mainQueue]
-                     usingBlock:^(__unused NSNotification *note) {
+    [center addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(__unused NSNotification *note) {
         ATRScanDelegates();
     }];
-    [center addObserverForName:UIApplicationDidBecomeActiveNotification
-                         object:nil
-                          queue:[NSOperationQueue mainQueue]
-                     usingBlock:^(__unused NSNotification *note) {
+    [center addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(__unused NSNotification *note) {
         ATRScanDelegates();
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             ATRShowLoadedToast();
         });
     }];
 
-    dispatch_async(dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        ATRScanDelegates();
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.00 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         ATRScanDelegates();
     });
 }
