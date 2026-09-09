@@ -109,11 +109,11 @@ static UIWindow *ATWindow(void) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     if (app.keyWindow) return app.keyWindow;
-#pragma clang diagnostic pop
-
     for (UIWindow *window in app.windows) {
         if (!window.hidden && window.alpha > 0.0) return window;
     }
+#pragma clang diagnostic pop
+
     return nil;
 }
 
@@ -319,23 +319,23 @@ static BOOL ATTrySearch(NSUInteger attempt) {
     return NO;
 }
 
+static void ATRetrySearch(NSUInteger attempt) {
+    if (ATTrySearch(attempt)) return;
+    if (attempt + 1 >= 16 || !ATPending().length) return;
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        ATRetrySearch(attempt + 1);
+    });
+}
+
 static void ATStartSearch(void) {
     if (!ATIsAllTrailsProcess() || !ATPending().length) return;
 
-    __block NSUInteger attempt = 0;
-    __block void (^retry)(void);
-    retry = ^{
-        if (ATTrySearch(attempt)) return;
-
-        attempt++;
-        if (attempt >= 16 || !ATPending().length) return;
-
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), retry);
-    };
-
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), retry);
+                   dispatch_get_main_queue(), ^{
+        ATRetrySearch(0);
+    });
 }
 
 %hook UIApplication
