@@ -55,15 +55,23 @@ jobs:
           deb=(packages/*.deb)
           version="$(sed -n 's/^Version: //p' control)"
           transport="com.551.alltrailsapptweak_${version}_iphoneos-arm64.deb.b64"
-          python3 - "$deb" "$transport" <<'PY'
+          transport_dir="transport/v${version}"
+          rm -rf "$transport_dir"
+          mkdir -p "$transport_dir"
+          python3 - "$deb" "$transport" "$transport_dir" <<'PY'
           import base64, pathlib, sys
           src = pathlib.Path(sys.argv[1])
           dst = pathlib.Path(sys.argv[2])
-          dst.write_text(base64.b64encode(src.read_bytes()).decode('ascii'))
+          outdir = pathlib.Path(sys.argv[3])
+          encoded = base64.b64encode(src.read_bytes()).decode('ascii')
+          dst.write_text(encoded)
+          chunk_size = 6000
+          for i in range(0, len(encoded), chunk_size):
+              (outdir / f'{i // chunk_size:03d}.b64').write_text(encoded[i:i + chunk_size])
           PY
           git config user.name "551"
           git config user.email "actions@github.com"
-          git add -f "$transport"
+          git add -f "$transport" "$transport_dir"
           git commit -m "Export v${version} DEB transport [skip ci]"
           git push origin HEAD:main
 
