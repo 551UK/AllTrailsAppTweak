@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: alltrailsapptweak-release
+  group: alltrailslinkfix-release
   cancel-in-progress: true
 
 jobs:
@@ -42,49 +42,37 @@ jobs:
 
           test "$(dpkg-deb -f "$deb" Architecture)" = iphoneos-arm64
           test "$(dpkg-deb -f "$deb" Package)" = com.551.alltrailsapptweak
+          test "$(dpkg-deb -f "$deb" Name)" = AllTrailsLinkFix
           dpkg-deb --info "$deb"
           dpkg-deb -x "$deb" "$RUNNER_TEMP/alltrails-check"
 
-          binary="$RUNNER_TEMP/alltrails-check/var/jb/Library/MobileSubstrate/DynamicLibraries/AllTrailsAppTweak.dylib"
-          filter="$RUNNER_TEMP/alltrails-check/var/jb/Library/MobileSubstrate/DynamicLibraries/AllTrailsAppTweak.plist"
+          binary="$RUNNER_TEMP/alltrails-check/var/jb/Library/MobileSubstrate/DynamicLibraries/AllTrailsLinkFix.dylib"
+          filter="$RUNNER_TEMP/alltrails-check/var/jb/Library/MobileSubstrate/DynamicLibraries/AllTrailsLinkFix.plist"
 
           test -s "$binary"
           test -s "$filter"
           xcrun lipo "$binary" -verify_arch arm64 arm64e
           plutil -lint "$filter"
 
-      - name: Export DEB transport
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AllTrailsLinkFix-rootless
+          path: packages/*.deb
+          if-no-files-found: error
+
+      - name: Remove older tweak releases
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          deb=(packages/*.deb)
           version="$(sed -n 's/^Version: //p' control)"
-          transport="com.551.alltrailsapptweak_${version}_iphoneos-arm64.deb.b64"
-          transport_dir="transport/v${version}"
-          rm -rf "$transport_dir"
-          mkdir -p "$transport_dir"
-          python3 - "$deb" "$transport" "$transport_dir" <<'PY'
-          import base64, pathlib, sys
-          src = pathlib.Path(sys.argv[1])
-          dst = pathlib.Path(sys.argv[2])
-          outdir = pathlib.Path(sys.argv[3])
-          encoded = base64.b64encode(src.read_bytes()).decode('ascii')
-          dst.write_text(encoded)
-          chunk_size = 2500
-          for i in range(0, len(encoded), chunk_size):
-              (outdir / f'{i // chunk_size:03d}.b64').write_text(encoded[i:i + chunk_size])
-          PY
-          git config user.name "551"
-          git config user.email "actions@github.com"
-          git add -f "$transport" "$transport_dir"
-          git commit -m "Export v${version} DEB transport [skip ci]"
-          git push origin HEAD:main
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: AllTrailsAppTweak-rootless
-          path: packages/*.deb
-          if-no-files-found: error
+          current="v${version}"
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            [ "$tag" = "$current" ] && continue
+            gh release delete "$tag" --yes --cleanup-tag
+          done < <(gh release list --limit 100 --json tagName --jq '.[].tagName')
 
       - name: Publish latest DEB
         env:
@@ -98,7 +86,6 @@ jobs:
             gh release upload "$current" packages/*.deb --clobber
           else
             gh release create "$current" packages/*.deb \
-              --target "$GITHUB_SHA" --title "AllTrailsAppTweak ${version}" \
-              --notes "Rebuilt from IPA inspection. Carries the full trail URL into the native website-link parser. Device verification required."
+              --target "$GITHUB_SHA" --title "AllTrailsLinkFix ${version}" \
+              --notes "AllTrailsLinkFix fixes shared trail links for the supplied AllTrails 23.2.40 build on rootless iOS 16. It carries the complete trail URL into AllTrails and hands it to the app's native website-link parser so the correct trail opens directly."
           fi
-
