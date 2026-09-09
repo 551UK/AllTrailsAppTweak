@@ -15,10 +15,11 @@ static NSDictionary *ATLaunchOptions(NSDictionary *options) {
     NSURL *transport = ATTransportURL(url);
     if (!transport) { %orig; return; }
     // Report actual launch success; use the original web URL if the app cannot open.
-    %orig(transport, ATLaunchOptions(options), ^(BOOL success) {
+    void (^result)(BOOL) = ^(BOOL success) {
         if (success) { if (completion) completion(YES); }
         else { %orig(url, options, completion); }
-    });
+    };
+    %orig(transport, ATLaunchOptions(options), result);
 }
 - (BOOL)openURL:(NSURL *)url {
     NSURL *transport = ATTransportURL(url);
