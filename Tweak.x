@@ -353,6 +353,8 @@ completionHandler:(void (^)(BOOL success))completion {
 %end
 
 %ctor {
+    %init;
+
     if (!ATIsAllTrailsProcess()) return;
 
     notify_register_dispatch(ATHandoffNotify.UTF8String,
