@@ -77,10 +77,9 @@ static NSString *ATPending(void) {
     return name;
 }
 
-// Bare alltrails:// is not a neutral app launcher on the older AllTrails
-// build: its legacy router treats the empty route as content and shows
-// "Content unavailable". LaunchServices opens the application by bundle ID
-// instead, so no deep-link route is handed to AllTrails at all.
+// Bare alltrails:// is not a neutral launcher on this older AllTrails build.
+// Launch by bundle id so the app lands on its normal Explore screen, then use
+// the visible search control to search the trail name from the modern URL.
 static BOOL ATLaunchAllTrailsWithoutURL(void) {
     Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
     SEL defaultSelector = NSSelectorFromString(@"defaultWorkspace");
@@ -126,7 +125,11 @@ static BOOL ATLooksLikeSearch(NSString *text) {
     return ATTextContains(text, @"search") ||
            ATTextContains(text, @"explore") ||
            ATTextContains(text, @"discover") ||
-           ATTextContains(text, @"find a trail");
+           ATTextContains(text, @"find a trail") ||
+           ATTextContains(text, @"find trails") ||
+           ATTextContains(text, @"find cities") ||
+           ATTextContains(text, @"find city") ||
+           ATTextContains(text, @"find places");
 }
 
 static UIButton *ATFindDismissButton(UIView *view) {
@@ -165,7 +168,9 @@ static UITextField *ATFindSearchField(UIView *view) {
 
     if ([view isKindOfClass:[UITextField class]]) {
         UITextField *field = (UITextField *)view;
-        if (ATLooksLikeSearch(field.placeholder) || ATLooksLikeSearch(field.accessibilityLabel)) {
+        if (ATLooksLikeSearch(field.placeholder) ||
+            ATLooksLikeSearch(field.accessibilityLabel) ||
+            ATLooksLikeSearch(field.accessibilityHint)) {
             return field;
         }
     }
@@ -182,10 +187,14 @@ static UIControl *ATFindSearchControl(UIView *view) {
 
     if ([view isKindOfClass:[UIControl class]]) {
         UIControl *control = (UIControl *)view;
-        if (ATLooksLikeSearch(control.accessibilityLabel) || ATLooksLikeSearch(control.accessibilityHint)) {
-            return control;
+        NSString *title = nil;
+        if ([control isKindOfClass:[UIButton class]]) {
+            title = ((UIButton *)control).currentTitle;
         }
-        if ([control isKindOfClass:[UIButton class]] && ATLooksLikeSearch(((UIButton *)control).currentTitle)) {
+
+        if (ATLooksLikeSearch(control.accessibilityLabel) ||
+            ATLooksLikeSearch(control.accessibilityHint) ||
+            ATLooksLikeSearch(title)) {
             return control;
         }
     }
@@ -246,38 +255,54 @@ static void ATSelectExplore(UITabBarController *tabs) {
 }
 
 static void ATSubmitBar(UISearchBar *bar, NSString *query) {
-    bar.text = query;
-    UITextField *field = bar.searchTextField;
-    field.text = query;
-    [field sendActionsForControlEvents:UIControlEventEditingChanged];
-
-    id<UISearchBarDelegate> delegate = bar.delegate;
-    if ([delegate respondsToSelector:@selector(searchBar:textDidChange:)]) {
-        [delegate searchBar:bar textDidChange:query];
-    }
-
     [bar becomeFirstResponder];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        id<UISearchBarDelegate> currentDelegate = bar.delegate;
-        if ([currentDelegate respondsToSelector:@selector(searchBarSearchButtonClicked:)]) {
-            [currentDelegate searchBarSearchButtonClicked:bar];
-        } else {
-            [bar.searchTextField sendActionsForControlEvents:UIControlEventEditingDidEndOnExit];
+        UISearchBar *target = ATFindSearchBar(ATWindow()) ?: bar;
+        target.text = query;
+        UITextField *field = target.searchTextField;
+        field.text = query;
+        [field sendActionsForControlEvents:UIControlEventEditingChanged];
+
+        id<UISearchBarDelegate> delegate = target.delegate;
+        if ([delegate respondsToSelector:@selector(searchBar:textDidChange:)]) {
+            [delegate searchBar:target textDidChange:query];
         }
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            id<UISearchBarDelegate> currentDelegate = target.delegate;
+            if ([currentDelegate respondsToSelector:@selector(searchBarSearchButtonClicked:)]) {
+                [currentDelegate searchBarSearchButtonClicked:target];
+            } else {
+                [target.searchTextField sendActionsForControlEvents:UIControlEventEditingDidEndOnExit];
+            }
+        });
     });
 }
 
 static void ATSubmitField(UITextField *field, NSString *query) {
-    field.text = query;
-    [field sendActionsForControlEvents:UIControlEventEditingChanged];
+    // On the user's older AllTrails build the Explore search box says
+    // "Find cities". Focusing that control may replace it with another field,
+    // so focus first, then re-find the active search field before typing.
     [field becomeFirstResponder];
 
-    id<UITextFieldDelegate> delegate = field.delegate;
-    if ([delegate respondsToSelector:@selector(textFieldShouldReturn:)]) {
-        [delegate textFieldShouldReturn:field];
-    }
-    [field sendActionsForControlEvents:UIControlEventEditingDidEndOnExit];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UITextField *target = ATFindSearchField(ATWindow()) ?: field;
+        target.text = query;
+        [target sendActionsForControlEvents:UIControlEventEditingChanged];
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            id<UITextFieldDelegate> delegate = target.delegate;
+            if ([delegate respondsToSelector:@selector(textFieldShouldReturn:)]) {
+                [delegate textFieldShouldReturn:target];
+            }
+            [target sendActionsForControlEvents:UIControlEventEditingDidEndOnExit];
+        });
+    });
 }
 
 static BOOL ATTrySearch(NSUInteger attempt) {
@@ -287,7 +312,6 @@ static BOOL ATTrySearch(NSUInteger attempt) {
     UIWindow *window = ATWindow();
     if (!window) return NO;
 
-    // Clear the exact stale error screen produced by the previous builds.
     UIButton *dismiss = ATFindDismissButton(window);
     if (dismiss) {
         [dismiss sendActionsForControlEvents:UIControlEventTouchUpInside];
@@ -311,9 +335,11 @@ static BOOL ATTrySearch(NSUInteger attempt) {
         return YES;
     }
 
-    if (attempt < 8) {
-        UIControl *control = ATFindSearchControl(window);
-        if (control) [control sendActionsForControlEvents:UIControlEventTouchUpInside];
+    // Older AllTrails can render the "Find cities" box as a tappable control
+    // first and only create the real text field after it is tapped.
+    UIControl *control = ATFindSearchControl(window);
+    if (control) {
+        [control sendActionsForControlEvents:UIControlEventTouchUpInside];
     }
 
     return NO;
@@ -321,9 +347,9 @@ static BOOL ATTrySearch(NSUInteger attempt) {
 
 static void ATRetrySearch(NSUInteger attempt) {
     if (ATTrySearch(attempt)) return;
-    if (attempt + 1 >= 16 || !ATPending().length) return;
+    if (attempt + 1 >= 20 || !ATPending().length) return;
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.40 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         ATRetrySearch(attempt + 1);
     });
@@ -332,7 +358,7 @@ static void ATRetrySearch(NSUInteger attempt) {
 static void ATStartSearch(void) {
     if (!ATIsAllTrailsProcess() || !ATPending().length) return;
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         ATRetrySearch(0);
     });
@@ -362,7 +388,6 @@ completionHandler:(void (^)(BOOL success))completion {
         return;
     }
 
-    // Last-resort fallback if LaunchServices is unavailable.
     NSURL *launcher = [NSURL URLWithString:@"alltrails://screen/explore"];
     NSMutableDictionary *launchOptions = options ? [options mutableCopy] : [NSMutableDictionary dictionary];
     [launchOptions removeObjectForKey:UIApplicationOpenURLOptionUniversalLinksOnly];
