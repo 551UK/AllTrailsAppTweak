@@ -1,8 +1,8 @@
 Package: com.551.alltrailsapptweak
 Name: AllTrailsAppTweak
-Version: 1.0.3
+Version: 1.0.4
 Architecture: iphoneos-arm64
-Description: Opens modern AllTrails web trail links in older AllTrails app versions.
+Description: Opens AllTrails web trail links directly in the AllTrails app using its Branch app-link handoff.
 Maintainer: 551
 Author: 551
 Section: Tweaks
