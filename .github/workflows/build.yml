@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: alltrailsapptweak-release
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -25,24 +25,7 @@ jobs:
           theos-sdks-branch: master
 
       - name: Build rootless package
-        shell: bash
-        run: |
-          set +e
-          make clean package FINALPACKAGE=1 > build.log 2>&1
-          status=$?
-          cat build.log
-          exit $status
-
-      - name: Save build error
-        if: failure()
-        shell: bash
-        run: |
-          tail -n 250 build.log > build-error.log || true
-          git config user.name "551"
-          git config user.email "actions@github.com"
-          git add -f build-error.log
-          git commit -m "Record build error [skip ci]" || true
-          git push origin HEAD:main || true
+        run: make clean package FINALPACKAGE=1
 
       - name: Validate package
         run: |
@@ -64,6 +47,25 @@ jobs:
           test -s "$filter"
           xcrun lipo "$binary" -verify_arch arm64 arm64e
           plutil -lint "$filter"
+
+      - name: Export DEB transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb=(packages/*.deb)
+          version="$(sed -n 's/^Version: //p' control)"
+          transport="com.551.alltrailsapptweak_${version}_iphoneos-arm64.deb.b64"
+          python3 - "$deb" "$transport" <<'PY'
+          import base64, pathlib, sys
+          src = pathlib.Path(sys.argv[1])
+          dst = pathlib.Path(sys.argv[2])
+          dst.write_text(base64.b64encode(src.read_bytes()).decode('ascii'))
+          PY
+          git config user.name "551"
+          git config user.email "actions@github.com"
+          git add -f "$transport"
+          git commit -m "Export v${version} DEB transport [skip ci]"
+          git push origin HEAD:main
 
       - uses: actions/upload-artifact@v4
         with:
