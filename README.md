@@ -2,6 +2,6 @@
 
 AllTrails hiking app companion tweak for older/rootless iOS setups.
 
-This tweak fixes newer AllTrails share links that older AllTrails versions may send to Safari instead of opening in the app. It removes newer locale prefixes such as `/en-gb/`, tries the canonical AllTrails universal link first, and falls back to the older `alltrails://screen/...` deep-link router.
+Modern AllTrails trail links can open the older iOS app but fail on its obsolete trail-detail router with “Content unavailable”. Version 1.0.5 bypasses that router: it extracts the trail name from the link, launches AllTrails, switches to Explore/search and submits the trail name inside the app.
 
 Designed for Dopamine/rootless iOS 15+.

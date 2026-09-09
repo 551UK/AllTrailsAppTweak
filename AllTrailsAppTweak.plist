@@ -11,7 +11,8 @@
             "ph.telegra.Telegraph",
             "com.google.chrome.ios",
             "org.mozilla.ios.Firefox",
-            "com.facebook.Messenger"
+            "com.facebook.Messenger",
+            "com.alltrails.AllTrails"
         );
     };
 }
