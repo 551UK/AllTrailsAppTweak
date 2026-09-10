@@ -1,0 +1,49 @@
+name: Temporary OBDeleven rootless build
+
+on:
+  push:
+    branches: [obd-build-temp-20260910]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Theos
+        uses: Randomblock1/theos-action@v1
+        with:
+          theos-sdks: https://github.com/theos/sdks
+          theos-sdks-branch: master
+
+      - name: Build rootless package
+        run: |
+          cd obd_build
+          make clean package FINALPACKAGE=1
+
+      - name: Validate package
+        run: |
+          set -euo pipefail
+          brew install dpkg
+          deb=(obd_build/packages/*.deb)
+          test "${#deb[@]}" -eq 1
+          test "$(dpkg-deb -f "${deb[0]}" Architecture)" = iphoneos-arm64
+          test "$(dpkg-deb -f "${deb[0]}" Package)" = com.551.obdelevenupdatebypass
+          dpkg-deb -x "${deb[0]}" "$RUNNER_TEMP/obd-check"
+          dylib="$RUNNER_TEMP/obd-check/var/jb/Library/MobileSubstrate/DynamicLibraries/OBDelevenUpdateBypass.dylib"
+          filter="$RUNNER_TEMP/obd-check/var/jb/Library/MobileSubstrate/DynamicLibraries/OBDelevenUpdateBypass.plist"
+          test -s "$dylib"
+          test -s "$filter"
+          xcrun lipo "$dylib" -verify_arch arm64
+          plutil -lint "$filter"
+          otool -L "$dylib"
+          codesign -dvv "$dylib"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OBDelevenUpdateBypass-rootless
+          path: obd_build/packages/*.deb
+          if-no-files-found: error
