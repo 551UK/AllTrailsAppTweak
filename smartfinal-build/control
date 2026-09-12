@@ -1,0 +1,9 @@
+Package: com.551.smartfinalupdatebypass
+Name: Smart & Final Update Bypass
+Version: 1.0.1
+Architecture: iphoneos-arm64
+Description: Bypasses the forced update check in Smart & Final 24.35.8 by spoofing the app version/build and neutralising the remote-config update gates.
+Author: 551UK
+Maintainer: 551UK
+Section: Tweaks
+Depends: mobilesubstrate
