@@ -1,0 +1,52 @@
+name: Build Smart Final bypass
+
+on:
+  push:
+    branches: [smartfinal-build-v101]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Theos
+        uses: Randomblock1/theos-action@v1
+        with:
+          theos-sdks: https://github.com/theos/sdks
+          theos-sdks-branch: master
+
+      - name: Build rootless package
+        run: make -C smartfinal-build clean package FINALPACKAGE=1
+
+      - name: Validate package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install dpkg
+          debs=(smartfinal-build/packages/*.deb)
+          test "${#debs[@]}" -eq 1
+          deb="${debs[0]}"
+          test "$(dpkg-deb -f "$deb" Package)" = "com.551.smartfinalupdatebypass"
+          test "$(dpkg-deb -f "$deb" Architecture)" = "iphoneos-arm64"
+          rm -rf "$RUNNER_TEMP/sfcheck"
+          mkdir -p "$RUNNER_TEMP/sfcheck"
+          dpkg-deb -x "$deb" "$RUNNER_TEMP/sfcheck"
+          dylib="$RUNNER_TEMP/sfcheck/var/jb/Library/MobileSubstrate/DynamicLibraries/SmartFinalUpdateBypass.dylib"
+          plist="$RUNNER_TEMP/sfcheck/var/jb/Library/MobileSubstrate/DynamicLibraries/SmartFinalUpdateBypass.plist"
+          test -s "$dylib"
+          test -s "$plist"
+          xcrun lipo "$dylib" -verify_arch arm64 arm64e
+          plutil -lint "$plist"
+          ls -lh "$deb" "$dylib" "$plist"
+          dpkg-deb --info "$deb"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SmartFinalUpdateBypass-1.0.1-rootless
+          path: smartfinal-build/packages/*.deb
+          if-no-files-found: error
